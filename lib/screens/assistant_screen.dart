@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+
 import '../core/constants.dart';
+import '../services/gemma_service.dart';
 
 class AssistantScreen extends StatefulWidget {
   final String initialInputMode;
@@ -16,11 +18,22 @@ class AssistantScreen extends StatefulWidget {
 }
 
 class _AssistantScreenState extends State<AssistantScreen> {
+  final GemmaService _gemmaService = GemmaService();
   final TextEditingController _controller = TextEditingController();
   final List<Map<String, dynamic>> _messages = [];
   final UrgencyLevel _urgency = UrgencyLevel.green;
   bool _ttsEnabled = false;
-  bool _isLoading = false;
+  String _serviceStatus = 'Model Gemma belum diinisialisasi.';
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialQuery != null && widget.initialQuery!.trim().isNotEmpty) {
+      _controller.text = widget.initialQuery!.trim();
+    }
+    _serviceStatus = _gemmaService.statusMessage;
+    _initializeReadyModel();
+  }
 
   @override
   void dispose() {
@@ -32,7 +45,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Asisten P3K', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          'Asisten P3K',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         actions: [
           IconButton(
             onPressed: () => setState(() => _ttsEnabled = !_ttsEnabled),
@@ -43,22 +59,34 @@ class _AssistantScreenState extends State<AssistantScreen> {
       ),
       body: Column(
         children: [
-          // Urgency indicator
           _UrgencyBanner(level: _urgency),
-
-          // Chat messages
+          _ModelStatusBanner(
+            isReady: _gemmaService.isReady,
+            status: _serviceStatus,
+            progress: _gemmaService.downloadProgress,
+            isDownloading: _gemmaService.isDownloading,
+          ),
           Expanded(
-            child: _messages.isEmpty
-                ? _EmptyState()
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _messages.length,
-                    itemBuilder: (context, i) => _MessageBubble(message: _messages[i]),
+            child: _gemmaService.isReady
+                ? (_messages.isEmpty
+                    ? _EmptyState(
+                        inputMode: widget.initialInputMode,
+                        serviceStatus: _serviceStatus,
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _messages.length,
+                        itemBuilder: (context, i) =>
+                            _MessageBubble(message: _messages[i]),
+                      ))
+                : _ModelSetupPanel(
+                    service: _gemmaService,
+                    status: _serviceStatus,
+                    onDownload: _downloadModel,
+                    onRetry: _initializeReadyModel,
                   ),
           ),
-
-          // Loading indicator
-          if (_isLoading)
+          if (_gemmaService.isReady && _isBusy())
             const Padding(
               padding: EdgeInsets.all(8),
               child: Row(
@@ -70,44 +98,105 @@ class _AssistantScreenState extends State<AssistantScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                   SizedBox(width: 8),
-                  Text('SIGAP sedang berpikir...', style: TextStyle(color: AppColors.textGrey)),
+                  Text(
+                    'SIGAP sedang berpikir...',
+                    style: TextStyle(color: AppColors.textGrey),
+                  ),
                 ],
               ),
             ),
-
-          // Tombol darurat + input
-          _BottomInputBar(
-            controller: _controller,
-            onSend: _sendMessage,
-            onVoice: _startVoice,
-            onPhoto: _pickPhoto,
-            onEmergency: _sendEmergency,
-          ),
+          if (_gemmaService.isReady)
+            _BottomInputBar(
+              controller: _controller,
+              onSend: _sendMessage,
+              onVoice: _startVoice,
+              onPhoto: _pickPhoto,
+              onEmergency: _sendEmergency,
+            ),
         ],
       ),
     );
   }
 
-  void _sendMessage() {
+  bool _isBusy() {
+    return _gemmaService.state == GemmaServiceState.initializing ||
+        _gemmaService.state == GemmaServiceState.checking;
+  }
+
+  Future<void> _initializeReadyModel() async {
+    setState(() {});
+    await _gemmaService.initializeReadyModel();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _serviceStatus = _gemmaService.statusMessage;
+    });
+  }
+
+  Future<void> _downloadModel() async {
+    setState(() {});
+    await _gemmaService.downloadAndInstallModel();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _serviceStatus = _gemmaService.statusMessage;
+    });
+  }
+
+  Future<void> _sendMessage() async {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
+
     setState(() {
       _messages.add({'role': 'user', 'text': text});
       _controller.clear();
-      _isLoading = true;
+      _messages.add({'role': 'assistant', 'text': ''});
     });
-    // TODO: Kirim ke GemmaService
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) {
+
+    if (!_gemmaService.isReady) {
+      await _gemmaService.initializeReadyModel();
+    }
+
+    if (!_gemmaService.isReady) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _serviceStatus = _gemmaService.statusMessage;
+        _messages.last['text'] = _serviceStatus;
+      });
+      return;
+    }
+
+    final buffer = StringBuffer();
+
+    try {
+      await for (final token in _gemmaService.generateResponse(text)) {
+        buffer.write(token);
+        if (!mounted) {
+          return;
+        }
         setState(() {
-          _messages.add({
-            'role': 'assistant',
-            'text': 'Model Gemma 4 belum terhubung. Selesaikan PRI-51 terlebih dahulu.',
-          });
-          _isLoading = false;
+          _messages.last['text'] = buffer.toString();
         });
       }
-    });
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _serviceStatus = _gemmaService.statusMessage;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _messages.last['text'] = 'Terjadi kesalahan saat memproses pesan: $error';
+        _serviceStatus = _messages.last['text'] as String;
+      });
+    }
   }
 
   void _startVoice() {
@@ -123,8 +212,280 @@ class _AssistantScreenState extends State<AssistantScreen> {
   }
 }
 
+class _ModelStatusBanner extends StatelessWidget {
+  final bool isReady;
+  final String status;
+  final int progress;
+  final bool isDownloading;
+
+  const _ModelStatusBanner({
+    required this.isReady,
+    required this.status,
+    required this.progress,
+    required this.isDownloading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final backgroundColor = isReady
+        ? AppColors.urgencyGreen.withValues(alpha: 0.12)
+        : AppColors.urgencyYellow.withValues(alpha: 0.18);
+    final foregroundColor = isReady ? AppColors.urgencyGreen : AppColors.navy;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      color: backgroundColor,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                isReady ? Icons.check_circle_outline : Icons.info_outline,
+                color: foregroundColor,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  status,
+                  style: TextStyle(
+                    color: foregroundColor,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (isDownloading) ...[
+            const SizedBox(height: 10),
+            LinearProgressIndicator(
+              value: progress > 0 ? progress / 100 : null,
+              minHeight: 6,
+              color: AppColors.navy,
+              backgroundColor: Colors.white.withValues(alpha: 0.5),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _ModelSetupPanel extends StatelessWidget {
+  final GemmaService service;
+  final String status;
+  final Future<void> Function() onDownload;
+  final Future<void> Function() onRetry;
+
+  const _ModelSetupPanel({
+    required this.service,
+    required this.status,
+    required this.onDownload,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isBusy = service.state == GemmaServiceState.downloading ||
+        service.state == GemmaServiceState.initializing ||
+        service.state == GemmaServiceState.checking;
+    final showDownloadButton =
+        service.needsDownload && !service.hasConfiguredLocalPath;
+    final showRetryButton =
+        !showDownloadButton && service.canRetry && !service.isDownloading;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: AppColors.red.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Icon(
+                        Icons.download_for_offline_outlined,
+                        color: AppColors.red,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Setup Gemma 4 Sekali Saja',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.navy,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'SIGAP perlu mengunduh model Gemma 4 E4B-IT ke perangkat Anda. Setelah selesai, asisten AI bisa dipakai secara lokal dan offline tanpa mengunduh ulang.',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textDark,
+                    height: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _SetupFact(
+                  icon: Icons.sd_storage_outlined,
+                  label: 'Ukuran model',
+                  value: service.estimatedModelSizeLabel,
+                ),
+                _SetupFact(
+                  icon: Icons.signal_wifi_statusbar_4_bar,
+                  label: 'Koneksi awal',
+                  value: service.hasConfiguredLocalPath
+                      ? 'Mode developer: file lokal'
+                      : 'Perlu internet untuk download pertama',
+                ),
+                const _SetupFact(
+                  icon: Icons.offline_bolt_outlined,
+                  label: 'Setelah setup',
+                  value: 'Berjalan offline di perangkat',
+                ),
+                const SizedBox(height: 18),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    status,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textGrey,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+                if (service.isDownloading) ...[
+                  const SizedBox(height: 16),
+                  LinearProgressIndicator(
+                    value: service.downloadProgress > 0
+                        ? service.downloadProgress / 100
+                        : null,
+                    minHeight: 8,
+                    color: AppColors.red,
+                    backgroundColor: AppColors.red.withValues(alpha: 0.12),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${service.downloadProgress}% selesai',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textGrey,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                if (showDownloadButton)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: isBusy ? null : onDownload,
+                      icon: const Icon(Icons.download),
+                      label: const Text('Download Model Sekarang'),
+                    ),
+                  ),
+                if (showRetryButton)
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: isBusy ? null : onRetry,
+                      icon: const Icon(Icons.refresh),
+                      label: Text(service.hasConfiguredLocalPath
+                          ? 'Coba Muat Model Lokal Lagi'
+                          : 'Periksa Lagi Status Model'),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SetupFact extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _SetupFact({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: AppColors.navy),
+          const SizedBox(width: 10),
+          Text(
+            '$label: ',
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textDark,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textGrey,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _UrgencyBanner extends StatelessWidget {
   final UrgencyLevel level;
+
   const _UrgencyBanner({required this.level});
 
   @override
@@ -152,18 +513,49 @@ class _UrgencyBanner extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
+  final String inputMode;
+  final String serviceStatus;
+
+  const _EmptyState({
+    required this.inputMode,
+    required this.serviceStatus,
+  });
+
   @override
   Widget build(BuildContext context) {
+    final prompt = switch (inputMode) {
+      'voice' => 'Mode suara dipilih.\nModel akan dipakai setelah Gemma siap.',
+      'photo' => 'Mode foto dipilih.\nFitur vision belum diaktifkan pada tahap PRI-51.',
+      _ => 'Ceritakan kondisi darurat\natau tekan BICARA',
+    };
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.health_and_safety_outlined, size: 64, color: AppColors.navy.withValues(alpha: 0.3)),
+          Icon(
+            Icons.health_and_safety_outlined,
+            size: 64,
+            color: AppColors.navy.withValues(alpha: 0.3),
+          ),
           const SizedBox(height: 16),
-          const Text(
-            'Ceritakan kondisi darurat\natau tekan BICARA',
+          Text(
+            prompt,
             textAlign: TextAlign.center,
-            style: TextStyle(color: AppColors.textGrey, fontSize: 16),
+            style: const TextStyle(color: AppColors.textGrey, fontSize: 16),
+          ),
+          const SizedBox(height: 12),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              serviceStatus,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: AppColors.textGrey,
+                fontSize: 12,
+                height: 1.4,
+              ),
+            ),
           ),
         ],
       ),
@@ -173,6 +565,7 @@ class _EmptyState extends StatelessWidget {
 
 class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic> message;
+
   const _MessageBubble({required this.message});
 
   @override
@@ -183,11 +576,13 @@ class _MessageBubble extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        constraints:
+            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         decoration: BoxDecoration(
           color: isUser ? AppColors.navy : Colors.white,
           borderRadius: BorderRadius.circular(16),
-          border: isUser ? null : Border.all(color: AppColors.navy.withValues(alpha: 0.1)),
+          border:
+              isUser ? null : Border.all(color: AppColors.navy.withValues(alpha: 0.1)),
         ),
         child: Text(
           message['text'] as String,
@@ -220,7 +615,6 @@ class _BottomInputBar extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
       child: Column(
         children: [
-          // Tombol darurat
           SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
@@ -228,7 +622,9 @@ class _BottomInputBar extends StatelessWidget {
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.red,
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
               icon: const Icon(Icons.location_on),
               label: const Text(
@@ -238,8 +634,6 @@ class _BottomInputBar extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-
-          // Input row
           Row(
             children: [
               IconButton(
@@ -262,7 +656,10 @@ class _BottomInputBar extends StatelessWidget {
                       borderRadius: BorderRadius.circular(24),
                       borderSide: BorderSide.none,
                     ),
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
                   ),
                   onSubmitted: (_) => onSend(),
                 ),
