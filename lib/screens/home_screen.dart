@@ -141,18 +141,17 @@ class _HomeTab extends StatelessWidget {
                   ],
                 ),
                 // Status badges
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
+                Row(
                   children: const [
                     _StatusBadge(
                       icon: Icons.location_on,
-                      label: 'GPS: AKTIF',
+                      label: 'GPS',
                       color: Color(0xFF4A90D9),
                     ),
-                    SizedBox(height: 4),
+                    SizedBox(width: 6),
                     _StatusBadge(
                       icon: Icons.wifi_off,
-                      label: 'OFFLINE AKTIF',
+                      label: 'OFFLINE',
                       color: Color(0xFF4A90D9),
                     ),
                   ],
