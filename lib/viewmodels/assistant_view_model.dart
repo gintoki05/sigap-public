@@ -725,21 +725,6 @@ class AssistantViewModel extends ChangeNotifier {
     return _gemmaService.generateResponse(prompt);
   }
 
-  void _replaceLastAssistantMessage(
-    String text, {
-    AssistantGuidance? guidance,
-  }) {
-    if (_messages.isEmpty) {
-      return;
-    }
-
-    _replaceAssistantMessageAt(
-      _messages.length - 1,
-      text,
-      guidance: guidance,
-    );
-  }
-
   void _replaceAssistantMessageAt(
     int index,
     String text, {
