@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 
 enum GemmaServiceState {
@@ -15,13 +16,16 @@ enum GemmaServiceState {
   error,
 }
 
-class GemmaService {
+class GemmaService extends ChangeNotifier {
   GemmaService._internal();
 
   static final GemmaService _instance = GemmaService._internal();
   static const String modelPathEnvKey = 'SIGAP_GEMMA_MODEL_PATH';
   static const String modelUrlEnvKey = 'SIGAP_GEMMA_MODEL_URL';
   static const String modelAuthTokenEnvKey = 'SIGAP_GEMMA_MODEL_AUTH_TOKEN';
+  static const String defaultDemoModelUrl =
+      'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm';
+  static const String modelVariantLabel = 'Gemma 4 E4B-IT';
   static const String configuredModelPath =
       String.fromEnvironment(modelPathEnvKey);
   static const String configuredModelUrl = String.fromEnvironment(modelUrlEnvKey);
@@ -46,6 +50,8 @@ class GemmaService {
   bool get isDownloading => _state == GemmaServiceState.downloading;
   bool get hasConfiguredLocalPath => configuredModelPath.trim().isNotEmpty;
   bool get hasConfiguredModelUrl => configuredModelUrl.trim().isNotEmpty;
+  String get effectiveModelUrl =>
+      configuredModelUrl.trim().isNotEmpty ? configuredModelUrl.trim() : defaultDemoModelUrl;
   bool get needsDownload =>
       _state == GemmaServiceState.needsDownload ||
       _state == GemmaServiceState.missingConfiguration;
@@ -67,8 +73,10 @@ class GemmaService {
     }
 
     _isBusy = true;
-    _state = GemmaServiceState.checking;
-    _statusMessage = 'Memeriksa ketersediaan Gemma 4...';
+    _setState(
+      GemmaServiceState.checking,
+      'Memeriksa ketersediaan Gemma 4...',
+    );
 
     try {
       await _ensurePluginInitialized();
@@ -89,28 +97,33 @@ class GemmaService {
       }
 
       if (!hasConfiguredModelUrl) {
-        _downloadProgress = 0;
-        _state = GemmaServiceState.missingConfiguration;
-        _statusMessage =
-            'URL model belum dikonfigurasi. Tambahkan --dart-define=$modelUrlEnvKey=https://.../gemma-4-e4b-it.litertlm atau gunakan path lokal untuk mode developer.';
-        return;
+        _setState(
+          GemmaServiceState.missingConfiguration,
+          'URL model custom belum dikonfigurasi. SIGAP akan memakai default demo model $modelVariantLabel dari LiteRT Community.',
+          progress: 0,
+        );
       }
 
       if (await _isConfiguredNetworkModelInstalled()) {
-        _state = GemmaServiceState.initializing;
-        _statusMessage = 'Menyiapkan model Gemma yang sudah tersimpan...';
+        _setState(
+          GemmaServiceState.initializing,
+          'Menyiapkan model $modelVariantLabel yang sudah tersimpan...',
+        );
         await _installConfiguredNetworkModel(skipProgressUpdate: true);
         await _loadActiveModel();
         return;
       }
 
-      _downloadProgress = 0;
-      _state = GemmaServiceState.needsDownload;
-      _statusMessage =
-          'Model Gemma 4 belum ada di perangkat. Unduh sekali agar SIGAP bisa dipakai offline setelah setup awal.';
+      _setState(
+        GemmaServiceState.needsDownload,
+        'Model $modelVariantLabel belum ada di perangkat. Unduh sekali agar SIGAP bisa dipakai offline setelah setup awal.',
+        progress: 0,
+      );
     } catch (error) {
-      _state = GemmaServiceState.error;
-      _statusMessage = 'Gagal menyiapkan Gemma 4: $error';
+      _setState(
+        GemmaServiceState.error,
+        'Gagal menyiapkan $modelVariantLabel: $error',
+      );
       await _releaseResources();
     } finally {
       _isBusy = false;
@@ -124,26 +137,32 @@ class GemmaService {
 
     await _ensurePluginInitialized();
     if (!hasConfiguredModelUrl) {
-      _state = GemmaServiceState.missingConfiguration;
-      _statusMessage =
-          'Tidak ada URL model untuk diunduh. Tambahkan --dart-define=$modelUrlEnvKey=...';
-      return;
+      _setState(
+        GemmaServiceState.missingConfiguration,
+        'URL custom tidak diberikan. SIGAP akan memakai default demo model $modelVariantLabel.',
+      );
     }
 
     _isBusy = true;
-    _downloadProgress = 0;
-    _state = GemmaServiceState.downloading;
-    _statusMessage =
-        'Mengunduh model Gemma 4. Proses ini hanya perlu sekali, lalu model akan tersimpan di perangkat.';
+    _setState(
+      GemmaServiceState.downloading,
+      'Mengunduh $modelVariantLabel. Proses ini hanya perlu sekali, lalu model akan tersimpan di perangkat.',
+      progress: 0,
+    );
 
     try {
       await _installConfiguredNetworkModel();
-      _state = GemmaServiceState.initializing;
-      _statusMessage = 'Mengaktifkan model Gemma yang baru diunduh...';
+      _setState(
+        GemmaServiceState.initializing,
+        'Mengaktifkan model $modelVariantLabel yang baru diunduh...',
+        progress: 100,
+      );
       await _loadActiveModel();
     } catch (error) {
-      _state = GemmaServiceState.error;
-      _statusMessage = 'Gagal download atau install Gemma 4: $error';
+      _setState(
+        GemmaServiceState.error,
+        'Gagal download atau install $modelVariantLabel: $error',
+      );
       await _releaseResources();
     } finally {
       _isBusy = false;
@@ -166,8 +185,10 @@ class GemmaService {
         }
       }
     } catch (error) {
-      _state = GemmaServiceState.error;
-      _statusMessage = 'Gagal menghasilkan respons Gemma: $error';
+      _setState(
+        GemmaServiceState.error,
+        'Gagal menghasilkan respons Gemma: $error',
+      );
       yield _statusMessage;
     }
   }
@@ -180,11 +201,13 @@ class GemmaService {
     _chat = null;
   }
 
-  Future<void> dispose() async {
+  Future<void> reset() async {
     await _releaseResources();
-    _state = GemmaServiceState.idle;
-    _statusMessage = 'Model Gemma belum diinisialisasi.';
-    _downloadProgress = 0;
+    _setState(
+      GemmaServiceState.idle,
+      'Model Gemma belum diinisialisasi.',
+      progress: 0,
+    );
     _activeBackend = null;
   }
 
@@ -203,45 +226,57 @@ class GemmaService {
   Future<void> _installFromLocalPath() async {
     final configuredPath = configuredModelPath.trim();
     if (configuredPath.isEmpty) {
-      _downloadProgress = 0;
-      _state = GemmaServiceState.missingModelPath;
-      _statusMessage =
-          'Model lokal belum dikonfigurasi. Jalankan app dengan --dart-define=$modelPathEnvKey=/path/ke/model.litertlm.';
+      _setState(
+        GemmaServiceState.missingModelPath,
+        'Model lokal belum dikonfigurasi. Jalankan app dengan --dart-define=$modelPathEnvKey=/path/ke/model.litertlm.',
+        progress: 0,
+      );
       return;
     }
 
     final file = File(configuredPath);
     if (!file.existsSync()) {
-      _downloadProgress = 0;
-      _state = GemmaServiceState.missingModelFile;
-      _statusMessage =
-          'File model lokal tidak ditemukan di $configuredPath. Pastikan file Gemma 4 E4B-IT sudah tersedia.';
+      _setState(
+        GemmaServiceState.missingModelFile,
+        'File model lokal tidak ditemukan di $configuredPath. Pastikan file $modelVariantLabel .litertlm sudah tersedia di storage Android/device, bukan hanya di host Windows.',
+        progress: 0,
+      );
       return;
     }
 
-    _state = GemmaServiceState.initializing;
-    _statusMessage = 'Memasang model lokal Gemma 4...';
+    _setState(
+      GemmaServiceState.initializing,
+      'Memasang model lokal $modelVariantLabel...',
+    );
     await FlutterGemma.installModel(
       modelType: ModelType.gemmaIt,
       fileType: _detectFileType(configuredPath),
     ).fromFile(configuredPath).install();
-    _downloadProgress = 100;
+    _setState(
+      GemmaServiceState.initializing,
+      'Memasang model lokal $modelVariantLabel...',
+      progress: 100,
+    );
   }
 
   Future<void> _loadActiveModel() async {
-    _state = GemmaServiceState.initializing;
-    _statusMessage = 'Menyiapkan sesi Gemma 4...';
+    _setState(
+      GemmaServiceState.initializing,
+      'Menyiapkan sesi $modelVariantLabel...',
+    );
     await _createModel();
-    _state = GemmaServiceState.ready;
-    _statusMessage = _activeBackend == PreferredBackend.gpu
-        ? 'Gemma 4 siap dipakai offline dengan backend GPU.'
-        : 'Gemma 4 siap dipakai offline dengan backend CPU.';
+    _setState(
+      GemmaServiceState.ready,
+      _activeBackend == PreferredBackend.gpu
+          ? '$modelVariantLabel siap dipakai offline dengan backend GPU.'
+          : '$modelVariantLabel siap dipakai offline dengan backend CPU.',
+    );
   }
 
   Future<void> _installConfiguredNetworkModel({
     bool skipProgressUpdate = false,
   }) async {
-    final trimmedUrl = configuredModelUrl.trim();
+    final trimmedUrl = effectiveModelUrl;
     final trimmedToken = configuredModelAuthToken.trim();
     final builder = FlutterGemma.installModel(
       modelType: ModelType.gemmaIt,
@@ -253,19 +288,24 @@ class GemmaService {
 
     if (!skipProgressUpdate) {
       builder.withProgress((progress) {
-        _downloadProgress = progress;
-        _state = GemmaServiceState.downloading;
-        _statusMessage =
-            'Mengunduh model Gemma 4... $progress% selesai. Setelah ini model akan tersimpan untuk pemakaian offline.';
+        _setState(
+          GemmaServiceState.downloading,
+          'Mengunduh $modelVariantLabel... $progress% selesai. Setelah ini model akan tersimpan untuk pemakaian offline.',
+          progress: progress,
+        );
       });
     }
 
     await builder.install();
-    _downloadProgress = 100;
+    _setState(
+      GemmaServiceState.downloading,
+      'Mengunduh $modelVariantLabel... 100% selesai. Setelah ini model akan tersimpan untuk pemakaian offline.',
+      progress: 100,
+    );
   }
 
   Future<bool> _isConfiguredNetworkModelInstalled() async {
-    final modelUrl = configuredModelUrl.trim();
+    final modelUrl = effectiveModelUrl;
     if (modelUrl.isEmpty) {
       return false;
     }
@@ -340,5 +380,25 @@ class GemmaService {
     throw UnsupportedError(
       'Format model tidak didukung: $filePath. Gunakan .litertlm, .task, .bin, atau .tflite.',
     );
+  }
+
+  void _setState(
+    GemmaServiceState newState,
+    String newStatus, {
+    int? progress,
+  }) {
+    final didChange = _state != newState ||
+        _statusMessage != newStatus ||
+        (progress != null && _downloadProgress != progress);
+
+    _state = newState;
+    _statusMessage = newStatus;
+    if (progress != null) {
+      _downloadProgress = progress.clamp(0, 100);
+    }
+
+    if (didChange) {
+      notifyListeners();
+    }
   }
 }

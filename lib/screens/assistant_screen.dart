@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 
 import '../core/constants.dart';
@@ -19,11 +22,14 @@ class AssistantScreen extends StatefulWidget {
 
 class _AssistantScreenState extends State<AssistantScreen> {
   final GemmaService _gemmaService = GemmaService();
+  final Connectivity _connectivity = Connectivity();
   final TextEditingController _controller = TextEditingController();
   final List<Map<String, dynamic>> _messages = [];
   final UrgencyLevel _urgency = UrgencyLevel.green;
   bool _ttsEnabled = false;
   String _serviceStatus = 'Model Gemma belum diinisialisasi.';
+  bool? _isOnWifi;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
   @override
   void initState() {
@@ -32,11 +38,17 @@ class _AssistantScreenState extends State<AssistantScreen> {
       _controller.text = widget.initialQuery!.trim();
     }
     _serviceStatus = _gemmaService.statusMessage;
+    _gemmaService.addListener(_handleServiceUpdate);
+    _connectivitySubscription =
+        _connectivity.onConnectivityChanged.listen(_updateConnectivityState);
+    _refreshConnectivityState();
     _initializeReadyModel();
   }
 
   @override
   void dispose() {
+    _connectivitySubscription?.cancel();
+    _gemmaService.removeListener(_handleServiceUpdate);
     _controller.dispose();
     super.dispose();
   }
@@ -82,6 +94,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
                 : _ModelSetupPanel(
                     service: _gemmaService,
                     status: _serviceStatus,
+                    isOnWifi: _isOnWifi,
                     onDownload: _downloadModel,
                     onRetry: _initializeReadyModel,
                   ),
@@ -123,6 +136,35 @@ class _AssistantScreenState extends State<AssistantScreen> {
         _gemmaService.state == GemmaServiceState.checking;
   }
 
+  void _handleServiceUpdate() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _serviceStatus = _gemmaService.statusMessage;
+    });
+  }
+
+  Future<void> _refreshConnectivityState() async {
+    final results = await _connectivity.checkConnectivity();
+    _updateConnectivityState(results);
+  }
+
+  void _updateConnectivityState(List<ConnectivityResult> results) {
+    if (!mounted) {
+      return;
+    }
+
+    final isOnWifi = results.contains(ConnectivityResult.wifi);
+    if (_isOnWifi == isOnWifi) {
+      return;
+    }
+
+    setState(() {
+      _isOnWifi = isOnWifi;
+    });
+  }
+
   Future<void> _initializeReadyModel() async {
     setState(() {});
     await _gemmaService.initializeReadyModel();
@@ -135,6 +177,17 @@ class _AssistantScreenState extends State<AssistantScreen> {
   }
 
   Future<void> _downloadModel() async {
+    if (_isOnWifi == false) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Anda tidak sedang memakai Wi-Fi. Download model Gemma 4 sekitar 4.3 GB dan bisa menghabiskan kuota data seluler.',
+          ),
+          duration: Duration(seconds: 5),
+        ),
+      );
+    }
+
     setState(() {});
     await _gemmaService.downloadAndInstallModel();
     if (!mounted) {
@@ -278,12 +331,14 @@ class _ModelStatusBanner extends StatelessWidget {
 class _ModelSetupPanel extends StatelessWidget {
   final GemmaService service;
   final String status;
+  final bool? isOnWifi;
   final Future<void> Function() onDownload;
   final Future<void> Function() onRetry;
 
   const _ModelSetupPanel({
     required this.service,
     required this.status,
+    required this.isOnWifi,
     required this.onDownload,
     required this.onRetry,
   });
@@ -367,13 +422,52 @@ class _ModelSetupPanel extends StatelessWidget {
                   label: 'Koneksi awal',
                   value: service.hasConfiguredLocalPath
                       ? 'Mode developer: file lokal'
-                      : 'Perlu internet untuk download pertama',
+                      : isOnWifi == null
+                          ? 'Memeriksa jenis koneksi...'
+                          : isOnWifi!
+                              ? 'Wi-Fi terdeteksi, aman untuk download pertama'
+                              : 'Bukan Wi-Fi, perhatikan kuota data',
                 ),
                 const _SetupFact(
                   icon: Icons.offline_bolt_outlined,
                   label: 'Setelah setup',
                   value: 'Berjalan offline di perangkat',
                 ),
+                if (!service.hasConfiguredLocalPath && isOnWifi == false) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: AppColors.urgencyYellow.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: AppColors.urgencyYellow.withValues(alpha: 0.35),
+                      ),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          Icons.wifi_off_rounded,
+                          color: AppColors.navy,
+                          size: 18,
+                        ),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Download model Gemma 4 cukup besar. Disarankan memakai Wi-Fi agar proses awal lebih stabil dan tidak menguras kuota data.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: AppColors.textDark,
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 18),
                 Container(
                   width: double.infinity,

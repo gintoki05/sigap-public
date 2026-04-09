@@ -135,12 +135,16 @@ Untuk pekerjaan terkait Gemma:
 - selalu cek apakah format model benar-benar kompatibel dengan `flutter_gemma`
 - jika issue menyebut format tertentu, validasi terhadap dokumentasi package yang dipakai di repo
 - jika ada perbedaan antara rencana Linear dan realitas package, prioritaskan realitas package lalu sarankan update Linear
+- untuk fase SIGAP saat ini, model resmi demo adalah `Gemma 4 E4B-IT` dalam format `.litertlm`
+- repo seperti `google/gemma-4-E4B-it` atau `google/gemma-4-E2B-it` yang berisi `safetensors` bukan artefak final yang tepat untuk app Flutter ini
+- sumber artefak yang diprioritaskan adalah repo `litert-community` yang menyediakan file `.litertlm`
 
 Aturan praktis:
 
 - pilihan model konseptual boleh dibahas
 - pilihan file artefak final harus diverifikasi
 - agent harus jelas membedakan "varian model yang tepat" vs "format file yang kompatibel dengan app"
+- untuk user/public distribution, pertimbangan ukuran file wajib disebutkan; `E4B` cocok untuk demo quality, sedangkan evaluasi `E2B` ditunda sampai validasi demo selesai
 
 ## 9. Aturan Untuk Fitur Medis
 
