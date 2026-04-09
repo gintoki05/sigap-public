@@ -1,8 +1,12 @@
 import 'dart:async';
-
+import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/constants.dart';
 import '../services/gemma_service.dart';
@@ -64,7 +68,34 @@ class AssistantMessage {
   }
 }
 
+class AssistantPhotoAttachment {
+  const AssistantPhotoAttachment({
+    required this.name,
+    required this.bytes,
+  });
+
+  final String name;
+  final Uint8List bytes;
+}
+
+class EmergencyLaunchResult {
+  const EmergencyLaunchResult({
+    required this.isSuccess,
+    required this.message,
+    this.requiresContact = false,
+  });
+
+  final bool isSuccess;
+  final String message;
+  final bool requiresContact;
+}
+
 class AssistantViewModel extends ChangeNotifier {
+  static const String _emergencyContactNameKey = 'sigap.emergency_contact_name';
+  static const String _emergencyContactPhoneKey =
+      'sigap.emergency_contact_phone';
+  static const bool _enableNativeVisionInference = false;
+
   AssistantViewModel({
     required String inputMode,
     GemmaService? gemmaService,
@@ -92,9 +123,12 @@ class AssistantViewModel extends ChangeNotifier {
   double _ttsSpeechRate = TtsService.defaultSpeechRate;
   bool? _isOnWifi;
   String _serviceStatus = 'Model Gemma belum diinisialisasi.';
+  String? _emergencyContactName;
+  String? _emergencyContactPhone;
   bool _isDisposed = false;
   bool _isImportingLocalModel = false;
   bool _isSendingMessage = false;
+  bool _isSendingEmergency = false;
   final Map<SigapModelVariant, bool> _installedVariants = {};
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
@@ -106,6 +140,8 @@ class AssistantViewModel extends ChangeNotifier {
   bool? get isOnWifi => _isOnWifi;
   String get serviceStatus => _serviceStatus;
   GemmaService get gemmaService => _gemmaService;
+  String? get emergencyContactName => _emergencyContactName;
+  String? get emergencyContactPhone => _emergencyContactPhone;
   Map<SigapModelVariant, bool> get installedVariants =>
       Map.unmodifiable(_installedVariants);
 
@@ -115,10 +151,15 @@ class AssistantViewModel extends ChangeNotifier {
   int get downloadProgress => _gemmaService.downloadProgress;
   Duration? get downloadEta => _gemmaService.downloadEta;
   bool get isImportingLocalModel => _isImportingLocalModel;
+  bool get isSendingEmergency => _isSendingEmergency;
+  bool get hasEmergencyContact =>
+      (_emergencyContactName?.trim().isNotEmpty ?? false) &&
+      (_emergencyContactPhone?.trim().isNotEmpty ?? false);
 
   bool get isBusy {
     return _isImportingLocalModel ||
         _isSendingMessage ||
+        _isSendingEmergency ||
         _gemmaService.state == GemmaServiceState.initializing ||
         _gemmaService.state == GemmaServiceState.checking ||
         _gemmaService.state == GemmaServiceState.deleting;
@@ -129,6 +170,7 @@ class AssistantViewModel extends ChangeNotifier {
     _connectivitySubscription =
         _connectivity.onConnectivityChanged.listen(_updateConnectivityState);
     await _refreshConnectivityState();
+    await _loadEmergencyContact();
     await _ragService.initialize();
     await _initializeTts();
     await initializeReadyModel();
@@ -160,6 +202,20 @@ class AssistantViewModel extends ChangeNotifier {
       _notifySafely();
     }
     await _speakGuidance(guidance);
+  }
+
+  Future<void> saveEmergencyContact({
+    required String name,
+    required String phone,
+  }) async {
+    final sanitizedName = name.trim();
+    final sanitizedPhone = phone.trim();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_emergencyContactNameKey, sanitizedName);
+    await prefs.setString(_emergencyContactPhoneKey, sanitizedPhone);
+    _emergencyContactName = sanitizedName;
+    _emergencyContactPhone = sanitizedPhone;
+    _notifySafely();
   }
 
   Future<void> selectVariant(SigapModelVariant variant) async {
@@ -253,11 +309,126 @@ class AssistantViewModel extends ChangeNotifier {
 
   Future<void> sendMessage(String text) async {
     final trimmedText = text.trim();
-    if (trimmedText.isEmpty || _isSendingMessage) {
+    if (trimmedText.isEmpty) {
       return;
     }
 
-    _messages.add(AssistantMessage(role: 'user', text: trimmedText));
+    await _sendGuidanceRequest(
+      userMessage: trimmedText,
+      fallbackInput: trimmedText,
+      ragQuery: trimmedText,
+      responseStreamBuilder: (prompt) => _gemmaService.generateResponse(prompt),
+    );
+  }
+
+  void startVoice() {
+    _serviceStatus =
+        'Input suara belum tersedia pada model aktif SIGAP. Dukungan audio di flutter_gemma masih perlu divalidasi untuk artefak model yang dipakai sekarang.';
+    _notifySafely();
+  }
+
+  Future<AssistantPhotoAttachment?> capturePhoto() async {
+    if (_isSendingMessage) {
+      return null;
+    }
+
+    try {
+      final pickedFile = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.rear,
+        imageQuality: 85,
+      );
+
+      if (pickedFile == null) {
+        _serviceStatus = 'Pengambilan foto dibatalkan.';
+        _notifySafely();
+        return null;
+      }
+
+      final imageBytes = await pickedFile.readAsBytes();
+      return AssistantPhotoAttachment(
+        name: pickedFile.name,
+        bytes: imageBytes,
+      );
+    } catch (error) {
+      _serviceStatus = 'Gagal mengambil foto kondisi: $error';
+      _notifySafely();
+      return null;
+    }
+  }
+
+  Future<void> sendPhotoMessage({
+    required Uint8List imageBytes,
+    String text = '',
+  }) async {
+    final trimmedDraft = text.trim();
+
+    if (!_enableNativeVisionInference) {
+      _serviceStatus =
+          'Foto diterima sebagai lampiran, tetapi analisis visual otomatis sedang dimatikan di perangkat ini untuk mencegah crash native.';
+
+      if (trimmedDraft.isEmpty) {
+        _messages.add(
+          const AssistantMessage(
+            role: 'user',
+            text: 'Saya melampirkan foto kondisi.',
+          ),
+        );
+        _messages.add(
+          const AssistantMessage(
+            role: 'assistant',
+            text:
+                'Analisis foto otomatis sedang dimatikan di perangkat ini untuk menjaga stabilitas. Tambahkan deskripsi singkat tentang apa yang terlihat pada foto, lalu kirim lagi agar SIGAP bisa memberi panduan yang lebih tepat.',
+          ),
+        );
+        _notifySafely();
+        return;
+      }
+
+      await _sendGuidanceRequest(
+        userMessage: 'Saya mengirim foto kondisi. Catatan: $trimmedDraft',
+        fallbackInput: trimmedDraft,
+        ragQuery: trimmedDraft,
+        responseStreamBuilder: (prompt) => _gemmaService.generateResponse(prompt),
+        hasPhotoAttachmentWithoutVision: true,
+      );
+      return;
+    }
+
+    final userMessage = trimmedDraft.isEmpty
+        ? 'Saya mengirim foto kondisi untuk dianalisis.'
+        : 'Saya mengirim foto kondisi. Catatan: $trimmedDraft';
+    final fallbackInput = trimmedDraft.isEmpty
+        ? 'Foto kondisi darurat dari kamera pengguna.'
+        : trimmedDraft;
+
+    await _sendGuidanceRequest(
+      userMessage: userMessage,
+      fallbackInput: fallbackInput,
+      ragQuery: trimmedDraft.isEmpty
+          ? 'analisis foto kondisi darurat'
+          : trimmedDraft,
+      responseStreamBuilder: (prompt) => _gemmaService.generateResponseWithImage(
+        prompt: prompt,
+        imageBytes: imageBytes,
+      ),
+      includePhotoContext: true,
+    );
+  }
+
+  Future<void> _sendGuidanceRequest({
+    required String userMessage,
+    required String fallbackInput,
+    required String ragQuery,
+    required Stream<String> Function(String prompt) responseStreamBuilder,
+    bool includePhotoContext = false,
+    bool hasPhotoAttachmentWithoutVision = false,
+  }) async {
+    if (_isSendingMessage) {
+      return;
+    }
+
+    _messages.add(AssistantMessage(role: 'user', text: userMessage));
     _messages.add(const AssistantMessage(role: 'assistant', text: ''));
     _isSendingMessage = true;
     _notifySafely();
@@ -277,21 +448,21 @@ class AssistantViewModel extends ChangeNotifier {
     final buffer = StringBuffer();
 
     try {
-      final ragContext = await _ragService.query(trimmedText, limit: 3);
+      final ragContext = await _ragService.query(ragQuery, limit: 3);
       final prompt = _buildActiveGuidancePrompt(
-        userInput: trimmedText,
+        userInput: fallbackInput,
         ragContext: ragContext,
+        includePhotoContext: includePhotoContext,
+        hasPhotoAttachmentWithoutVision: hasPhotoAttachmentWithoutVision,
       );
-      await for (final token in _gemmaService.generateResponse(prompt)) {
+      await for (final token in responseStreamBuilder(prompt)) {
         buffer.write(token);
-        _replaceLastAssistantMessage(
-          _cleanDisplayText(buffer.toString()),
-        );
+        _replaceLastAssistantMessage(_cleanDisplayText(buffer.toString()));
         _notifySafely();
       }
       final guidance = _buildStructuredGuidance(
         rawText: buffer.toString(),
-        fallbackInput: trimmedText,
+        fallbackInput: fallbackInput,
       );
       _urgency = guidance.urgency;
       _replaceLastAssistantMessage(
@@ -310,16 +481,92 @@ class AssistantViewModel extends ChangeNotifier {
     }
   }
 
-  void startVoice() {
-    // TODO: Implement voice input via flutter_gemma audio
-  }
+  Future<EmergencyLaunchResult> sendEmergency() async {
+    if (_isSendingEmergency) {
+      return const EmergencyLaunchResult(
+        isSuccess: false,
+        message: 'Permintaan darurat sedang diproses.',
+      );
+    }
 
-  void pickPhoto() {
-    // TODO: Implement image_picker + flutter_gemma vision
-  }
+    if (!hasEmergencyContact) {
+      return const EmergencyLaunchResult(
+        isSuccess: false,
+        message: 'Kontak darurat belum disimpan.',
+        requiresContact: true,
+      );
+    }
 
-  void sendEmergency() {
-    // TODO: Implement geolocator + url_launcher WhatsApp
+    _isSendingEmergency = true;
+    _notifySafely();
+
+    try {
+      final position = await _determineCurrentPosition();
+      final message = _buildEmergencyMessage(position);
+      final phoneDigits = _sanitizeWhatsAppPhone(_emergencyContactPhone!);
+
+      if (phoneDigits.isEmpty) {
+        return const EmergencyLaunchResult(
+          isSuccess: false,
+          message: 'Nomor WhatsApp kontak darurat belum valid.',
+          requiresContact: true,
+        );
+      }
+
+      final whatsappUri = Uri(
+        scheme: 'whatsapp',
+        host: 'send',
+        queryParameters: {
+          'phone': phoneDigits,
+          'text': message,
+        },
+      );
+      final fallbackUri = Uri.https(
+        'wa.me',
+        '/$phoneDigits',
+        {'text': message},
+      );
+
+      final launched = await launchUrl(
+            whatsappUri,
+            mode: LaunchMode.externalApplication,
+          ) ||
+          await launchUrl(
+            fallbackUri,
+            mode: LaunchMode.externalApplication,
+          );
+
+      if (!launched) {
+        return const EmergencyLaunchResult(
+          isSuccess: false,
+          message: 'WhatsApp tidak bisa dibuka di perangkat ini.',
+        );
+      }
+
+      return EmergencyLaunchResult(
+        isSuccess: true,
+        message:
+            'WhatsApp dibuka untuk ${_emergencyContactName!}. Pesan darurat sudah disiapkan.',
+      );
+    } on LocationServiceDisabledException {
+      return const EmergencyLaunchResult(
+        isSuccess: false,
+        message: 'Layanan lokasi sedang nonaktif. Nyalakan GPS lalu coba lagi.',
+      );
+    } on PermissionDeniedException catch (error) {
+      return EmergencyLaunchResult(
+        isSuccess: false,
+        message: error.message,
+      );
+    } catch (error) {
+      return EmergencyLaunchResult(
+        isSuccess: false,
+        message: 'Gagal menyiapkan pesan darurat: $error',
+      );
+    } finally {
+      _isSendingEmergency = false;
+      _notifySafely();
+    }
   }
 
   Future<void> _refreshConnectivityState() async {
@@ -368,11 +615,28 @@ class AssistantViewModel extends ChangeNotifier {
   String _buildActiveGuidancePrompt({
     required String userInput,
     required List<String> ragContext,
+    bool includePhotoContext = false,
+    bool hasPhotoAttachmentWithoutVision = false,
   }) {
     final hasContext = ragContext.isNotEmpty;
     final contextBlock = hasContext
         ? ragContext.map((item) => '- $item').join('\n')
         : '- Tidak ada konteks RAG tambahan yang terverifikasi di perangkat saat ini.';
+    final modalityBlock = includePhotoContext
+        ? '''
+Ada satu foto kondisi dari kamera user.
+- Gunakan foto hanya untuk membantu mengamati kondisi yang tampak.
+- Jika detail visual tidak jelas, katakan keterbatasannya dengan jujur.
+- Jangan mengarang luka, warna, perdarahan, atau benda asing bila tidak terlihat jelas.
+'''
+        : hasPhotoAttachmentWithoutVision
+        ? '''
+User melampirkan foto kondisi, tetapi analisis visual native sedang dimatikan demi stabilitas runtime perangkat.
+- Jangan mengklaim bisa melihat atau menganalisis foto.
+- Gunakan hanya deskripsi teks user.
+- Jika informasi visual masih kurang, minta user menjelaskan apa yang terlihat pada foto.
+'''
+        : 'Tidak ada foto terlampir pada permintaan ini.';
 
     return '''
 Anda adalah SIGAP, asisten pertolongan pertama offline untuk warga awam di situasi darurat.
@@ -402,6 +666,8 @@ Gunakan konteks RAG lokal bila relevan, dan jangan mengarang fakta di luar konte
 Input mode user saat ini: $_inputMode
 Konteks RAG lokal SIGAP:
 $contextBlock
+Konteks multimodal:
+$modalityBlock
 Laporan user: $userInput
 ''';
   }
@@ -653,6 +919,86 @@ Laporan user: $userInput
     }
   }
 
+  Future<void> _loadEmergencyContact() async {
+    final prefs = await SharedPreferences.getInstance();
+    _emergencyContactName = prefs.getString(_emergencyContactNameKey)?.trim();
+    _emergencyContactPhone = prefs.getString(_emergencyContactPhoneKey)?.trim();
+  }
+
+  Future<Position> _determineCurrentPosition() async {
+    final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!isServiceEnabled) {
+      throw LocationServiceDisabledException();
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        throw const PermissionDeniedException(
+          'Izin lokasi ditolak. SIGAP butuh GPS untuk mengirim titik darurat.',
+        );
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      throw const PermissionDeniedException(
+        'Izin lokasi ditolak permanen. Buka pengaturan aplikasi untuk mengaktifkan GPS SIGAP.',
+      );
+    }
+
+    return Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        timeLimit: Duration(seconds: 15),
+      ),
+    );
+  }
+
+  String _buildEmergencyMessage(Position position) {
+    AssistantGuidance? latestGuidance;
+    for (final message in _messages.reversed) {
+      if (message.guidance != null) {
+        latestGuidance = message.guidance;
+        break;
+      }
+    }
+    final latestUserMessage = _messages.reversed
+        .firstWhere(
+          (message) => message.isUser && message.text.trim().isNotEmpty,
+          orElse: () => const AssistantMessage(
+            role: 'user',
+            text: 'Kondisi darurat belum dijelaskan detail.',
+          ),
+        )
+        .text;
+
+    final guidanceSummary = latestGuidance?.summary ??
+        'Butuh bantuan segera. Mohon cek kondisi korban secepatnya.';
+    final urgencyLabel = latestGuidance?.urgency.label ?? 'Panggil Bantuan';
+    final mapsLink =
+        'https://maps.google.com/?q=${position.latitude},${position.longitude}';
+
+    return '''
+SIGAP butuh bantuan darurat.
+
+Kontak tujuan: ${_emergencyContactName ?? 'Kontak darurat'}
+Level urgensi: $urgencyLabel
+Ringkasan kondisi: $guidanceSummary
+Laporan singkat user: $latestUserMessage
+Lokasi GPS: ${position.latitude}, ${position.longitude}
+Buka peta: $mapsLink
+'''.trim();
+  }
+
+  String _sanitizeWhatsAppPhone(String rawPhone) {
+    final digitsOnly = rawPhone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digitsOnly.startsWith('0')) {
+      return '62${digitsOnly.substring(1)}';
+    }
+    return digitsOnly;
+  }
+
   Future<void> _handleGuidanceSpeech(AssistantGuidance guidance) async {
     if (!_ttsEnabled && guidance.urgency != UrgencyLevel.red) {
       return;
@@ -717,4 +1063,12 @@ Laporan user: $userInput
     }
     notifyListeners();
   }
+}
+
+class LocationServiceDisabledException implements Exception {}
+
+class PermissionDeniedException implements Exception {
+  const PermissionDeniedException(this.message);
+
+  final String message;
 }

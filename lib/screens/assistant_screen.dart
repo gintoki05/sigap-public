@@ -36,6 +36,7 @@ class _AssistantScreenBody extends StatefulWidget {
 
 class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
   late final TextEditingController _controller;
+  AssistantPhotoAttachment? _pendingPhoto;
 
   @override
   void initState() {
@@ -66,15 +67,10 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
             IconButton(
               onPressed: viewModel.isBusy
                   ? null
-                  : () => _deleteModel(context, viewModel),
-              icon: const Icon(Icons.delete_outline),
-              tooltip: 'Hapus model',
+                  : () => _showStatusDetailsSheet(context, viewModel),
+              icon: const Icon(Icons.storage_rounded),
+              tooltip: 'Kelola model',
             ),
-          IconButton(
-            onPressed: () => _showTtsSpeedSheet(context, viewModel),
-            icon: const Icon(Icons.speed_outlined),
-            tooltip: 'Kecepatan suara',
-          ),
           IconButton(
             onPressed: viewModel.toggleTts,
             icon: Icon(
@@ -86,14 +82,14 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
       ),
       body: Column(
         children: [
-          _UrgencyBanner(level: viewModel.urgency),
-          _ModelStatusBanner(
+          _CompactStatusStrip(
+            level: viewModel.urgency,
             isReady: viewModel.isModelReady,
             status: viewModel.serviceStatus,
-            progress: viewModel.downloadProgress,
             isDownloading: viewModel.isDownloading,
             isDeleting: viewModel.isDeleting,
             eta: viewModel.downloadEta,
+            onTap: () => _showStatusDetailsSheet(context, viewModel),
           ),
           Expanded(
             child: viewModel.isModelReady
@@ -114,6 +110,8 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                                 onReplay: () => viewModel.replayGuidance(
                                   message.guidance!,
                                 ),
+                                onAdjustSpeed: () =>
+                                    _showTtsSpeedSheet(context, viewModel),
                               );
                             }
                             return _MessageBubble(message: message);
@@ -139,8 +137,15 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
               controller: _controller,
               onSend: () => _sendMessage(viewModel),
               onVoice: viewModel.startVoice,
-              onPhoto: viewModel.pickPhoto,
-              onEmergency: viewModel.sendEmergency,
+              onPhoto: () => _pickPhoto(viewModel),
+              onEmergency: () => _sendEmergency(context, viewModel),
+              isBusy: viewModel.isSendingEmergency,
+              emergencyContactName: viewModel.emergencyContactName,
+              emergencyContactPhone: viewModel.emergencyContactPhone,
+              onEditEmergencyContact: () =>
+                  _showEmergencyContactDialog(context, viewModel),
+              pendingPhoto: _pendingPhoto,
+              onRemovePhoto: _clearPendingPhoto,
             ),
         ],
       ),
@@ -149,12 +154,43 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
 
   Future<void> _sendMessage(AssistantViewModel viewModel) async {
     final text = _controller.text.trim();
-    if (text.isEmpty) {
+    final pendingPhoto = _pendingPhoto;
+    if (text.isEmpty && pendingPhoto == null) {
       return;
     }
 
     _controller.clear();
+    _clearPendingPhoto();
+    if (pendingPhoto != null) {
+      await viewModel.sendPhotoMessage(
+        imageBytes: pendingPhoto.bytes,
+        text: text,
+      );
+      return;
+    }
+
     await viewModel.sendMessage(text);
+  }
+
+  Future<void> _pickPhoto(AssistantViewModel viewModel) async {
+    final photo = await viewModel.capturePhoto();
+    if (!mounted || photo == null) {
+      return;
+    }
+
+    setState(() {
+      _pendingPhoto = photo;
+    });
+  }
+
+  void _clearPendingPhoto() {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _pendingPhoto = null;
+    });
   }
 
   Future<void> _downloadModel(
@@ -175,10 +211,17 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     await viewModel.downloadModel();
   }
 
+  void _dismissActiveInput(BuildContext context) {
+    FocusManager.instance.primaryFocus?.unfocus();
+    FocusScope.of(context).unfocus();
+  }
+
   Future<void> _deleteModel(
     BuildContext context,
     AssistantViewModel viewModel,
   ) async {
+    _dismissActiveInput(context);
+
     final isInstalled = await viewModel.isSelectedModelInstalled();
     if (!context.mounted || !isInstalled) {
       return;
@@ -186,23 +229,87 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
 
     final modelLabel = viewModel.gemmaService.selectedModelLabel;
     final modelSize = viewModel.gemmaService.estimatedModelSizeLabel;
+    var hasAcknowledgedRedownload = false;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Hapus model?'),
-        content: Text(
-          '$modelLabel akan dihapus dari perangkat dan ruang penyimpanan sekitar $modelSize akan dibebaskan. Anda bisa mengunduhnya lagi kapan saja.',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Hapus model?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$modelLabel akan dihapus dari perangkat dan ruang penyimpanan sekitar $modelSize akan dibebaskan.',
+              ),
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.urgencyYellow.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.urgencyYellow.withValues(alpha: 0.32),
+                  ),
+                ),
+                child: const Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.warning_amber_rounded,
+                      color: AppColors.navy,
+                      size: 18,
+                    ),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Model offline berukuran besar. Jika dihapus, Anda mungkin perlu download ulang yang cukup lama dan bisa menghabiskan banyak kuota.',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: AppColors.textDark,
+                          height: 1.4,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              CheckboxListTile(
+                value: hasAcknowledgedRedownload,
+                onChanged: (value) {
+                  setDialogState(() {
+                    hasAcknowledgedRedownload = value ?? false;
+                  });
+                },
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: const Text(
+                  'Saya paham model harus diunduh ulang jika nanti dibutuhkan.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textDark,
+                    height: 1.35,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Batal'),
+            ),
+            FilledButton(
+              onPressed: hasAcknowledgedRedownload
+                  ? () => Navigator.of(context).pop(true)
+                  : null,
+              child: const Text('Hapus'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Batal'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Hapus'),
-          ),
-        ],
       ),
     );
 
@@ -217,6 +324,8 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     BuildContext context,
     AssistantViewModel viewModel,
   ) async {
+    _dismissActiveInput(context);
+
     if (!viewModel.isDownloading) {
       return;
     }
@@ -253,6 +362,8 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     BuildContext context,
     AssistantViewModel viewModel,
   ) async {
+    _dismissActiveInput(context);
+
     double draftRate = viewModel.ttsSpeechRate;
 
     await showModalBottomSheet<void>(
@@ -345,171 +456,92 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
       },
     );
   }
-}
 
-class _ModelStatusBanner extends StatelessWidget {
-  final bool isReady;
-  final String status;
-  final int progress;
-  final bool isDownloading;
-  final bool isDeleting;
-  final Duration? eta;
+  Future<void> _showStatusDetailsSheet(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    _dismissActiveInput(context);
 
-  const _ModelStatusBanner({
-    required this.isReady,
-    required this.status,
-    required this.progress,
-    required this.isDownloading,
-    required this.isDeleting,
-    required this.eta,
-  });
+    final urgencyHelperText = switch (viewModel.urgency) {
+      UrgencyLevel.green =>
+        'Fokus pada langkah aman mandiri sambil terus memantau perubahan gejala.',
+      UrgencyLevel.yellow =>
+        'Butuh penanganan cepat dan evaluasi medis bila gejala tidak membaik.',
+      UrgencyLevel.red =>
+        'Prioritaskan bantuan darurat dan jangan menunda mencari pertolongan medis.',
+    };
 
-  @override
-  Widget build(BuildContext context) {
-    final backgroundColor = isReady
-        ? AppColors.urgencyGreen.withValues(alpha: 0.12)
-        : AppColors.urgencyYellow.withValues(alpha: 0.18);
-    final foregroundColor = isReady ? AppColors.urgencyGreen : AppColors.navy;
-    final statusLabel = isReady
-        ? 'Model siap'
-        : isDeleting
-        ? 'Menghapus model'
-        : isDownloading
-        ? 'Sedang download'
-        : 'Perlu setup';
-
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.symmetric(
-        horizontal: 16,
-        vertical: isReady ? 8 : 10,
-      ),
-      color: backgroundColor,
-      child: isReady
-          ? Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.85),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    statusLabel,
-                    style: TextStyle(
-                      color: foregroundColor,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.check_circle_outline,
-                        color: foregroundColor,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          status,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: foregroundColor,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            )
-          : Column(
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.85),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    statusLabel,
-                    style: TextStyle(
-                      color: foregroundColor,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                    ),
+                const Text(
+                  'Status Assistant',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.navy,
                   ),
                 ),
-                const SizedBox(height: 8),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.info_outline,
-                      color: foregroundColor,
-                      size: 18,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        status,
-                        style: TextStyle(
-                          color: foregroundColor,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
+                const SizedBox(height: 16),
+                _StatusDetailTile(
+                  icon: Icons.flag_outlined,
+                  title: 'Level urgensi',
+                  value: viewModel.urgency.label,
+                  helperText: urgencyHelperText,
+                  accentColor: viewModel.urgency.color,
+                ),
+                const SizedBox(height: 12),
+                _StatusDetailTile(
+                  icon: viewModel.isModelReady
+                      ? Icons.check_circle_outline
+                      : Icons.info_outline,
+                  title: 'Status model',
+                  value: viewModel.serviceStatus,
+                  helperText: viewModel.downloadEta == null
+                      ? null
+                      : viewModel.downloadEta == Duration.zero
+                      ? 'Menyelesaikan proses akhir.'
+                      : 'Sisa sekitar ${_formatEta(viewModel.downloadEta!)}.',
+                  accentColor: viewModel.isModelReady
+                      ? AppColors.urgencyGreen
+                      : AppColors.navy,
+                ),
+                if (viewModel.isModelReady && !viewModel.isBusy) ...[
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () async {
+                        Navigator.of(context).pop();
+                        await _deleteModel(context, viewModel);
+                      },
+                      icon: const Icon(Icons.delete_outline),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.red,
+                        side: const BorderSide(color: AppColors.red),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14),
                         ),
                       ),
+                      label: const Text('Hapus Model Dari Perangkat'),
                     ),
-                  ],
-                ),
-                if (isDownloading) ...[
-                  const SizedBox(height: 10),
-                  LinearProgressIndicator(
-                    value: progress > 0 ? progress / 100 : null,
-                    minHeight: 6,
-                    color: AppColors.navy,
-                    backgroundColor: Colors.white.withValues(alpha: 0.5),
                   ),
-                  if (eta != null) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      eta == Duration.zero
-                          ? 'Menyelesaikan proses akhir...'
-                          : 'Sisa sekitar ${_formatEta(eta!)}',
-                      style: TextStyle(
-                        color: foregroundColor,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ] else ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      'Menghitung sisa waktu...',
-                      style: TextStyle(
-                        color: foregroundColor,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ],
                 ],
               ],
             ),
+          ),
+        );
+      },
     );
   }
 
@@ -525,6 +557,353 @@ class _ModelStatusBanner extends StatelessWidget {
       return seconds > 0 ? '$minutes menit $seconds detik' : '$minutes menit';
     }
     return '${eta.inSeconds.clamp(1, 59)} detik';
+  }
+
+  Future<void> _sendEmergency(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    _dismissActiveInput(context);
+
+    if (!viewModel.hasEmergencyContact) {
+      final didSaveContact = await _showEmergencyContactDialog(context, viewModel);
+      if (didSaveContact != true || !context.mounted) {
+        return;
+      }
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Menyiapkan lokasi dan pesan darurat...'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    final result = await viewModel.sendEmergency();
+    if (!context.mounted) {
+      return;
+    }
+
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        backgroundColor: result.isSuccess ? AppColors.urgencyGreen : AppColors.red,
+      ),
+    );
+
+    if (result.requiresContact) {
+      await _showEmergencyContactDialog(context, viewModel);
+    }
+  }
+
+  Future<bool?> _showEmergencyContactDialog(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    _dismissActiveInput(context);
+
+    var name = viewModel.emergencyContactName ?? '';
+    var phone = viewModel.emergencyContactPhone ?? '';
+    String? errorText;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Simpan Kontak Darurat'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    initialValue: name,
+                    decoration: const InputDecoration(
+                      labelText: 'Nama kontak',
+                      hintText: 'Misalnya Ibu, Kakak, atau Tetangga',
+                    ),
+                    textCapitalization: TextCapitalization.words,
+                    onChanged: (value) => name = value,
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    initialValue: phone,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Nomor WhatsApp',
+                      hintText: '08xxxxxxxxxx',
+                    ),
+                    onChanged: (value) => phone = value,
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      errorText!,
+                      style: const TextStyle(
+                        color: AppColors.red,
+                        fontSize: 12,
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Nanti saja'),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    final trimmedName = name.trim();
+                    final trimmedPhone = phone.trim();
+                    if (trimmedName.isEmpty || trimmedPhone.isEmpty) {
+                      setDialogState(() {
+                        errorText =
+                            'Nama dan nomor WhatsApp harus diisi supaya SIGAP bisa menyiapkan pesan darurat.';
+                      });
+                      return;
+                    }
+
+                    await viewModel.saveEmergencyContact(
+                      name: trimmedName,
+                      phone: trimmedPhone,
+                    );
+
+                    if (context.mounted) {
+                      Navigator.of(context).pop(true);
+                    }
+                  },
+                  child: const Text('Simpan'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    return saved;
+  }
+}
+
+class _CompactStatusStrip extends StatelessWidget {
+  const _CompactStatusStrip({
+    required this.level,
+    required this.isReady,
+    required this.status,
+    required this.isDownloading,
+    required this.isDeleting,
+    required this.eta,
+    required this.onTap,
+  });
+
+  final UrgencyLevel level;
+  final bool isReady;
+  final String status;
+  final bool isDownloading;
+  final bool isDeleting;
+  final Duration? eta;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final modelLabel = isReady
+        ? 'Model siap'
+        : isDeleting
+        ? 'Menghapus model'
+        : isDownloading
+        ? 'Download model'
+        : 'Perlu setup';
+
+    return Material(
+      color: Colors.white,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: AppColors.navy.withValues(alpha: 0.08),
+              ),
+            ),
+          ),
+          child: Row(
+            children: [
+              _InlineStatusPill(
+                label: level.label,
+                backgroundColor: level.color.withValues(alpha: 0.12),
+                foregroundColor: level.color,
+                icon: Icons.circle,
+                iconSize: 9,
+              ),
+              const SizedBox(width: 8),
+              _InlineStatusPill(
+                label: modelLabel,
+                backgroundColor: (isReady
+                        ? AppColors.urgencyGreen
+                        : AppColors.navy)
+                    .withValues(alpha: 0.08),
+                foregroundColor:
+                    isReady ? AppColors.urgencyGreen : AppColors.navy,
+                icon: isReady ? Icons.check_circle_outline : Icons.memory,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  eta != null && isDownloading
+                      ? 'Sisa ${eta == Duration.zero ? 'sebentar lagi' : _compactEta(eta!)}'
+                      : status,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.keyboard_arrow_down_rounded,
+                color: AppColors.textGrey.withValues(alpha: 0.9),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _compactEta(Duration eta) {
+    if (eta.inMinutes >= 1) {
+      return '${eta.inMinutes} menit';
+    }
+    return '${eta.inSeconds.clamp(1, 59)} detik';
+  }
+}
+
+class _InlineStatusPill extends StatelessWidget {
+  const _InlineStatusPill({
+    required this.label,
+    required this.backgroundColor,
+    required this.foregroundColor,
+    required this.icon,
+    this.iconSize = 14,
+  });
+
+  final String label;
+  final Color backgroundColor;
+  final Color foregroundColor;
+  final IconData icon;
+  final double iconSize;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: iconSize, color: foregroundColor),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: foregroundColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusDetailTile extends StatelessWidget {
+  const _StatusDetailTile({
+    required this.icon,
+    required this.title,
+    required this.value,
+    required this.accentColor,
+    this.helperText,
+  });
+
+  final IconData icon;
+  final String title;
+  final String value;
+  final String? helperText;
+  final Color accentColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accentColor.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: accentColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: accentColor, size: 18),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textGrey,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textDark,
+                    fontWeight: FontWeight.w700,
+                    height: 1.35,
+                  ),
+                ),
+                if (helperText != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    helperText!,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textGrey,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
@@ -1166,63 +1545,6 @@ class _MiniPill extends StatelessWidget {
   }
 }
 
-class _UrgencyBanner extends StatelessWidget {
-  final UrgencyLevel level;
-
-  const _UrgencyBanner({required this.level});
-
-  @override
-  Widget build(BuildContext context) {
-    final helperText = switch (level) {
-      UrgencyLevel.green =>
-        'Fokus pada langkah aman mandiri sambil terus pantau gejala.',
-      UrgencyLevel.yellow =>
-        'Butuh penanganan cepat dan evaluasi medis bila gejala tidak membaik.',
-      UrgencyLevel.red =>
-        'Prioritaskan bantuan darurat dan jangan tunda mencari pertolongan medis.',
-    };
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      color: level.color.withValues(alpha: 0.15),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  color: level.color,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                level.label,
-                style: TextStyle(
-                  color: level.color,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            helperText,
-            style: const TextStyle(
-              color: AppColors.textGrey,
-              fontSize: 12,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _EmptyState extends StatelessWidget {
   final String inputMode;
   final String serviceStatus;
@@ -1345,11 +1667,13 @@ class _GuidanceCard extends StatelessWidget {
     required this.message,
     required this.speechRate,
     required this.onReplay,
+    required this.onAdjustSpeed,
   });
 
   final AssistantMessage message;
   final double speechRate;
   final Future<void> Function() onReplay;
+  final Future<void> Function() onAdjustSpeed;
 
   @override
   Widget build(BuildContext context) {
@@ -1357,17 +1681,17 @@ class _GuidanceCard extends StatelessWidget {
     final urgencyColor = guidance.urgency.color;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: urgencyColor.withValues(alpha: 0.18)),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: urgencyColor.withValues(alpha: 0.14)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
           ),
         ],
       ),
@@ -1389,83 +1713,82 @@ class _GuidanceCard extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Text(
             guidance.summary,
             style: const TextStyle(
-              fontSize: 16,
+              fontSize: 15,
               fontWeight: FontWeight.w700,
               color: AppColors.textDark,
               height: 1.4,
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Row(
             children: [
-              OutlinedButton.icon(
+              TextButton.icon(
                 onPressed: onReplay,
-                icon: const Icon(Icons.replay_outlined),
-                label: const Text('Ulangi'),
+                icon: const Icon(Icons.volume_up_outlined),
+                label: const Text('Putar Lagi'),
               ),
-              const SizedBox(width: 8),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.speed_outlined,
-                    size: 16,
-                    color: AppColors.textGrey.withValues(alpha: 0.85),
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    'Kecepatan ${speechRate.toStringAsFixed(2)}',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textGrey.withValues(alpha: 0.9),
-                    ),
-                  ),
-                ],
+              const SizedBox(width: 2),
+              TextButton.icon(
+                onPressed: onAdjustSpeed,
+                icon: const Icon(Icons.speed_outlined),
+                label: Text(speechRate.toStringAsFixed(2)),
               ),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           _WarningBox(
             color: urgencyColor,
             warning: guidance.warning,
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           const Text(
             'Langkah yang disarankan',
             style: TextStyle(
-              fontSize: 14,
+              fontSize: 13,
               fontWeight: FontWeight.w700,
               color: AppColors.navy,
             ),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           for (var i = 0; i < guidance.steps.length; i++) ...[
             _StepCard(
               index: i + 1,
               step: guidance.steps[i],
             ),
-            if (i != guidance.steps.length - 1) const SizedBox(height: 10),
+            if (i != guidance.steps.length - 1) const SizedBox(height: 8),
           ],
           if (guidance.followUpQuestions.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            const Text(
-              'Pertanyaan lanjutan',
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: AppColors.navy,
+            const SizedBox(height: 10),
+            Theme(
+              data: Theme.of(context).copyWith(
+                dividerColor: Colors.transparent,
+              ),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                minTileHeight: 40,
+                dense: true,
+                title: const Text(
+                  'Pertanyaan lanjutan',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.navy,
+                  ),
+                ),
+                children: [
+                  const SizedBox(height: 4),
+                  for (final question in guidance.followUpQuestions) ...[
+                    _FollowUpQuestion(question: question),
+                    const SizedBox(height: 6),
+                  ],
+                ],
               ),
             ),
-            const SizedBox(height: 8),
-            for (final question in guidance.followUpQuestions) ...[
-              _FollowUpQuestion(question: question),
-              const SizedBox(height: 8),
-            ],
           ],
         ],
       ),
@@ -1486,10 +1809,10 @@ class _WarningBox extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color.withValues(alpha: 0.22)),
       ),
       child: Row(
@@ -1501,8 +1824,8 @@ class _WarningBox extends StatelessWidget {
             child: Text(
               warning,
               style: const TextStyle(
-                fontSize: 13,
-                height: 1.45,
+                fontSize: 12,
+                height: 1.4,
                 color: AppColors.textDark,
                 fontWeight: FontWeight.w600,
               ),
@@ -1527,10 +1850,10 @@ class _StepCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.background,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: AppColors.navy.withValues(alpha: 0.08)),
       ),
       child: Row(
@@ -1560,18 +1883,18 @@ class _StepCard extends StatelessWidget {
                 Text(
                   step.title,
                   style: const TextStyle(
-                    fontSize: 14,
+                    fontSize: 13,
                     fontWeight: FontWeight.w700,
                     color: AppColors.textDark,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text(
                   step.details,
                   style: const TextStyle(
-                    fontSize: 13,
+                    fontSize: 12,
                     color: AppColors.textGrey,
-                    height: 1.45,
+                    height: 1.4,
                   ),
                 ),
               ],
@@ -1625,10 +1948,16 @@ class _FollowUpQuestion extends StatelessWidget {
 
 class _BottomInputBar extends StatelessWidget {
   final TextEditingController controller;
-  final VoidCallback onSend;
+  final Future<void> Function() onSend;
   final VoidCallback onVoice;
-  final VoidCallback onPhoto;
-  final VoidCallback onEmergency;
+  final Future<void> Function() onPhoto;
+  final Future<void> Function() onEmergency;
+  final bool isBusy;
+  final String? emergencyContactName;
+  final String? emergencyContactPhone;
+  final Future<bool?> Function() onEditEmergencyContact;
+  final AssistantPhotoAttachment? pendingPhoto;
+  final VoidCallback onRemovePhoto;
 
   const _BottomInputBar({
     required this.controller,
@@ -1636,32 +1965,182 @@ class _BottomInputBar extends StatelessWidget {
     required this.onVoice,
     required this.onPhoto,
     required this.onEmergency,
+    required this.isBusy,
+    required this.emergencyContactName,
+    required this.emergencyContactPhone,
+    required this.onEditEmergencyContact,
+    required this.pendingPhoto,
+    required this.onRemovePhoto,
   });
 
   @override
   Widget build(BuildContext context) {
+    final hasEmergencyContact =
+        (emergencyContactName?.trim().isNotEmpty ?? false) &&
+        (emergencyContactPhone?.trim().isNotEmpty ?? false);
+
     return Container(
       color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
       child: Column(
         children: [
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: onEmergency,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.red,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+          if (pendingPhoto != null) ...[
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: AppColors.navy.withValues(alpha: 0.08),
                 ),
               ),
-              icon: const Icon(Icons.location_on),
-              label: const Text(
-                'KIRIM LOKASI SAYA',
-                style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1),
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.memory(
+                      pendingPhoto!.bytes,
+                      width: 44,
+                      height: 44,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Foto siap dikirim',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.navy,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          pendingPhoto!.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textGrey,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: onRemovePhoto,
+                    icon: const Icon(
+                      Icons.close_rounded,
+                      color: AppColors.textGrey,
+                    ),
+                    tooltip: 'Hapus foto',
+                  ),
+                ],
               ),
             ),
+          ],
+          Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(999),
+                  onTap: isBusy ? null : onEmergency,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.red,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        isBusy
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.emergency_share_outlined,
+                                size: 18,
+                                color: Colors.white,
+                              ),
+                        const SizedBox(width: 8),
+                        Text(
+                          isBusy ? 'Menyiapkan...' : 'Darurat',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: AppColors.navy.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.contact_phone_outlined,
+                        size: 16,
+                        color: AppColors.navy,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          hasEmergencyContact
+                              ? 'Kontak: ${emergencyContactName!} • ${emergencyContactPhone!}'
+                              : 'Kontak darurat belum disimpan',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textGrey,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: onEditEmergencyContact,
+                        style: TextButton.styleFrom(
+                          minimumSize: Size.zero,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('Ubah'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Row(
@@ -1671,31 +2150,34 @@ class _BottomInputBar extends StatelessWidget {
                 icon: const Icon(Icons.mic, color: AppColors.navy),
               ),
               IconButton(
-                onPressed: onPhoto,
+                onPressed: () async => onPhoto(),
                 icon: const Icon(Icons.camera_alt, color: AppColors.navy),
               ),
               Expanded(
                 child: TextField(
                   controller: controller,
+                  keyboardType: TextInputType.multiline,
+                  textCapitalization: TextCapitalization.sentences,
+                  minLines: 1,
+                  maxLines: 4,
                   decoration: InputDecoration(
                     hintText: 'Ketik kondisi darurat...',
                     hintStyle: const TextStyle(color: AppColors.textGrey),
                     filled: true,
                     fillColor: AppColors.background,
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
+                      borderRadius: BorderRadius.circular(18),
                       borderSide: BorderSide.none,
                     ),
                     contentPadding: const EdgeInsets.symmetric(
                       horizontal: 16,
-                      vertical: 8,
+                      vertical: 12,
                     ),
                   ),
-                  onSubmitted: (_) => onSend(),
                 ),
               ),
               IconButton(
-                onPressed: onSend,
+                onPressed: () async => onSend(),
                 icon: const Icon(Icons.send, color: AppColors.navy),
               ),
             ],

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
@@ -105,6 +106,10 @@ class GemmaService extends ChangeNotifier {
   CancelToken? _downloadCancelToken;
   InferenceModel? _model;
   InferenceChat? _chat;
+  bool _modelSupportsImage = false;
+  bool _modelSupportsAudio = false;
+  bool _chatSupportsImage = false;
+  bool _chatSupportsAudio = false;
   PreferredBackend? _activeBackend;
   SigapModelVariant _selectedVariant = SigapModelVariant.e2b;
   bool _prefsLoaded = false;
@@ -457,14 +462,41 @@ class GemmaService extends ChangeNotifier {
   }
 
   Stream<String> generateResponse(String prompt) async* {
+    yield* _generateResponseForMessage(
+      Message.text(text: prompt, isUser: true),
+    );
+  }
+
+  Stream<String> generateResponseWithImage({
+    required String prompt,
+    required Uint8List imageBytes,
+  }) async* {
+    yield* _generateResponseForMessage(
+      Message.withImage(
+        text: prompt,
+        imageBytes: imageBytes,
+        isUser: true,
+      ),
+      supportImage: true,
+    );
+  }
+
+  Stream<String> _generateResponseForMessage(
+    Message message, {
+    bool supportImage = false,
+    bool supportAudio = false,
+  }) async* {
     if (!isReady) {
       yield _statusMessage;
       return;
     }
 
     try {
-      final chat = await _ensureChat();
-      await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+      final chat = await _ensureChat(
+        supportImage: supportImage,
+        supportAudio: supportAudio,
+      );
+      await chat.addQueryChunk(message);
 
       await for (final response in chat.generateChatResponseAsync()) {
         if (response is TextResponse) {
@@ -486,6 +518,8 @@ class GemmaService extends ChangeNotifier {
     }
     await _chat!.close();
     _chat = null;
+    _chatSupportsImage = false;
+    _chatSupportsAudio = false;
   }
 
   Future<void> reset() async {
@@ -701,8 +735,19 @@ class GemmaService extends ChangeNotifier {
   }
 
   Future<void> _createModel() async {
+    await _createConfiguredModel();
+  }
+
+  Future<void> _createConfiguredModel({
+    bool supportImage = false,
+    bool supportAudio = false,
+  }) async {
     await _chat?.close();
     _chat = null;
+    _modelSupportsImage = false;
+    _modelSupportsAudio = false;
+    _chatSupportsImage = false;
+    _chatSupportsAudio = false;
     await _model?.close();
     _model = null;
 
@@ -710,20 +755,54 @@ class GemmaService extends ChangeNotifier {
       _model = await FlutterGemma.getActiveModel(
         maxTokens: 2048,
         preferredBackend: PreferredBackend.gpu,
+        supportImage: supportImage,
+        supportAudio: supportAudio,
+        maxNumImages: supportImage ? 1 : null,
       );
       _activeBackend = PreferredBackend.gpu;
     } catch (_) {
       _model = await FlutterGemma.getActiveModel(
         maxTokens: 2048,
         preferredBackend: PreferredBackend.cpu,
+        supportImage: supportImage,
+        supportAudio: supportAudio,
+        maxNumImages: supportImage ? 1 : null,
       );
       _activeBackend = PreferredBackend.cpu;
     }
+
+    _modelSupportsImage = supportImage;
+    _modelSupportsAudio = supportAudio;
   }
 
-  Future<InferenceChat> _ensureChat() async {
-    if (_chat != null) {
+  Future<InferenceChat> _ensureChat({
+    bool supportImage = false,
+    bool supportAudio = false,
+  }) async {
+    final needsModelReconfiguration =
+        _model == null ||
+        (supportImage && !_modelSupportsImage) ||
+        (supportAudio && !_modelSupportsAudio);
+    if (needsModelReconfiguration) {
+      await _createConfiguredModel(
+        supportImage: supportImage,
+        supportAudio: supportAudio,
+      );
+    }
+
+    final canReuseExistingChat =
+        _chat != null &&
+        (!supportImage || _chatSupportsImage) &&
+        (!supportAudio || _chatSupportsAudio);
+    if (canReuseExistingChat) {
       return _chat!;
+    }
+
+    if (_chat != null) {
+      await _chat!.close();
+      _chat = null;
+      _chatSupportsImage = false;
+      _chatSupportsAudio = false;
     }
 
     final model = _model;
@@ -735,9 +814,11 @@ class GemmaService extends ChangeNotifier {
       modelType: ModelType.gemmaIt,
       supportsFunctionCalls: false,
       isThinking: false,
-      supportImage: false,
-      supportAudio: false,
+      supportImage: supportImage,
+      supportAudio: supportAudio,
     );
+    _chatSupportsImage = supportImage;
+    _chatSupportsAudio = supportAudio;
     return _chat!;
   }
 
@@ -746,6 +827,10 @@ class GemmaService extends ChangeNotifier {
       await _chat!.close();
       _chat = null;
     }
+    _modelSupportsImage = false;
+    _modelSupportsAudio = false;
+    _chatSupportsImage = false;
+    _chatSupportsAudio = false;
     if (_model != null) {
       await _model!.close();
       _model = null;
