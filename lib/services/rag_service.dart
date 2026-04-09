@@ -204,7 +204,7 @@ class RagService extends ChangeNotifier {
   }) async {
     final db = await _requireDatabase();
     final rows = await db.query(_tableKnowledgeBase);
-    final tokens = _tokenize(input);
+    final tokens = _expandQueryTokens(input);
 
     final scored = rows
         .map(RagDocument.fromRow)
@@ -337,9 +337,77 @@ class RagService extends ChangeNotifier {
         .where((token) => token.length >= 3)
         .toList();
   }
+
+  List<String> _expandQueryTokens(String input) {
+    final baseTokens = _tokenize(input);
+    final expanded = <String>{...baseTokens};
+
+    for (final token in baseTokens) {
+      expanded.addAll(_keywordAliases[token] ?? const []);
+    }
+
+    final normalizedInput = input.toLowerCase();
+    for (final entry in _phraseAliases.entries) {
+      if (normalizedInput.contains(entry.key)) {
+        expanded.addAll(entry.value);
+      }
+    }
+
+    return expanded.toList();
+  }
 }
 
+const Map<String, List<String>> _keywordAliases = {
+  'sayat': ['sayatan', 'tersayat', 'iris', 'teriris', 'luka'],
+  'sayatan': ['sayat', 'tersayat', 'iris', 'teriris', 'luka'],
+  'lecet': ['abrasi', 'tergores', 'gesek', 'luka'],
+  'gores': ['tergores', 'lecet', 'abrasi', 'luka'],
+  'berdarah': ['darah', 'pendarahan', 'perdarahan', 'luka'],
+  'darah': ['berdarah', 'pendarahan', 'perdarahan'],
+  'mimisan': ['hidung', 'darah', 'epistaksis'],
+  'pingsan': ['tidak', 'sadar', 'lemas'],
+  'kejang': ['epilepsi', 'kelojotan'],
+  'tersedak': ['napas', 'sumbatan', 'batuk'],
+  'bakar': ['terbakar', 'panas', 'knalpot'],
+  'terbakar': ['bakar', 'panas', 'knalpot'],
+  'fraktur': ['patah', 'tulang', 'cedera'],
+  'patah': ['fraktur', 'tulang', 'cedera'],
+  'listrik': ['sengatan', 'setrum'],
+  'setrum': ['listrik', 'sengatan'],
+  'ular': ['gigitan', 'bisa'],
+  'keracunan': ['racun', 'muntah', 'tertelan'],
+  'infeksi': ['nanah', 'merah', 'bengkak'],
+};
+
+const Map<String, List<String>> _phraseAliases = {
+  'benda menancap': ['tertancap', 'asing', 'jangan', 'cabut'],
+  'tidak sadar': ['pingsan', 'respons', 'napas'],
+  'nyeri dada': ['sesak', 'jantung', 'darurat'],
+  'gigitan serangga': ['gatal', 'bengkak', 'alergi'],
+  'luka sayat': ['sayat', 'sayatan', 'berdarah'],
+  'luka lecet': ['lecet', 'abrasi', 'tergores'],
+  'patah tulang': ['fraktur', 'imobilisasi', 'cedera'],
+};
+
 final List<RagDocument> _seedDocuments = [
+  const RagDocument(
+    id: 'protocol-luka-sayat',
+    title: 'Protokol P3K Luka Sayat Ringan',
+    category: 'protokol',
+    tags: ['luka sayat', 'sayatan', 'tersayat', 'berdarah'],
+    content:
+        'Untuk luka sayat ringan: cuci tangan bila memungkinkan, tekan luka dengan kain bersih atau kasa jika berdarah, bilas dengan air bersih mengalir, lalu tutup dengan balutan bersih. Cari bantuan medis bila luka dalam, lebar, sulit berhenti berdarah, atau berada di wajah, sendi, atau dekat tendon.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  const RagDocument(
+    id: 'protocol-luka-lecet',
+    title: 'Protokol P3K Luka Lecet atau Abrasi',
+    category: 'protokol',
+    tags: ['luka lecet', 'abrasi', 'tergores', 'jatuh'],
+    content:
+        'Untuk luka lecet atau abrasi: bersihkan kotoran dengan air bersih mengalir, jangan gosok terlalu keras, hentikan perdarahan ringan dengan tekanan lembut, lalu tutup dengan kasa atau plester bersih. Periksa ke fasilitas kesehatan bila luka sangat kotor, luas, atau muncul tanda infeksi seperti bengkak, merah berat, atau nanah.',
+    source: 'Ringkasan internal SIGAP',
+  ),
   const RagDocument(
     id: 'protocol-luka-bakar',
     title: 'Protokol P3K Luka Bakar Ringan',
@@ -386,6 +454,24 @@ final List<RagDocument> _seedDocuments = [
     source: 'Ringkasan internal SIGAP',
   ),
   const RagDocument(
+    id: 'protocol-mimisan',
+    title: 'Protokol P3K Mimisan',
+    category: 'protokol',
+    tags: ['mimisan', 'hidung', 'darah', 'epistaksis'],
+    content:
+        'Untuk mimisan: dudukkan korban tegak dan condong sedikit ke depan, tekan bagian lunak hidung selama sekitar 10 menit tanpa sering melepas tekanan, dan minta korban bernapas lewat mulut. Cari bantuan medis bila perdarahan berat, tidak berhenti, atau terjadi setelah benturan keras.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  const RagDocument(
+    id: 'protocol-benda-menancap',
+    title: 'Protokol P3K Bila Ada Benda Menancap',
+    category: 'protokol',
+    tags: ['benda menancap', 'tertancap', 'asing', 'jangan cabut'],
+    content:
+        'Jika ada benda menancap pada luka, jangan cabut benda tersebut. Stabilkan area di sekitarnya dengan kain atau balutan seperlunya, tekan perdarahan di sekitar luka bila memungkinkan tanpa menekan benda, dan segera cari bantuan medis.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  const RagDocument(
     id: 'protocol-stroke',
     title: 'Tanda Darurat Stroke',
     category: 'protokol',
@@ -401,6 +487,42 @@ final List<RagDocument> _seedDocuments = [
     tags: ['nyeri dada', 'sesak', 'jantung', 'darurat'],
     content:
         'Nyeri dada berat, terutama disertai sesak, keringat dingin, lemas, atau menjalar ke lengan atau rahang, harus dianggap gawat darurat. Hentikan aktivitas, bantu korban duduk nyaman, dan segera cari bantuan medis.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  const RagDocument(
+    id: 'protocol-fraktur',
+    title: 'Protokol P3K Cedera Diduga Patah Tulang',
+    category: 'protokol',
+    tags: ['fraktur', 'patah tulang', 'imobilisasi', 'cedera'],
+    content:
+        'Jika diduga patah tulang, jangan paksa meluruskan anggota tubuh yang cedera. Kurangi gerakan, imobilisasi pada posisi yang ditemukan bila mampu dan aman, kompres dingin terbungkus kain untuk bengkak bila perlu, dan segera cari bantuan medis terutama bila nyeri berat, bentuk anggota tubuh berubah, atau korban tidak bisa menggerakkan bagian tersebut.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  const RagDocument(
+    id: 'protocol-gigitan-serangga',
+    title: 'Protokol P3K Gigitan atau Sengatan Serangga',
+    category: 'protokol',
+    tags: ['gigitan serangga', 'sengatan', 'gatal', 'bengkak'],
+    content:
+        'Untuk gigitan atau sengatan serangga ringan: bersihkan area dengan air dan sabun lembut, kompres dingin dengan kain, dan pantau bengkak atau gatal. Cari bantuan medis segera bila muncul sesak, bengkak luas, pusing, muntah, atau reaksi alergi berat.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  const RagDocument(
+    id: 'protocol-sengatan-listrik',
+    title: 'Protokol P3K Sengatan Listrik',
+    category: 'protokol',
+    tags: ['sengatan listrik', 'setrum', 'arus', 'bahaya'],
+    content:
+        'Pada sengatan listrik, pastikan sumber listrik sudah aman sebelum menyentuh korban. Setelah aman, cek respons dan napas, dan cari bantuan medis karena cedera dalam bisa terjadi walau luka luar tampak kecil. Jika korban tidak responsif atau tidak bernapas normal, anggap gawat darurat.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  const RagDocument(
+    id: 'protocol-keracunan',
+    title: 'Protokol Awal Kecurigaan Keracunan',
+    category: 'protokol',
+    tags: ['keracunan', 'racun', 'tertelan', 'muntah'],
+    content:
+        'Bila dicurigai keracunan, jauhkan korban dari sumber paparan bila aman, identifikasi zat yang mungkin terlibat, dan jangan memaksa muntah kecuali diarahkan tenaga medis. Segera cari bantuan medis terutama bila korban sesak, kejang, muntah terus, atau penurunan kesadaran.',
     source: 'Ringkasan internal SIGAP',
   ),
   const RagDocument(
