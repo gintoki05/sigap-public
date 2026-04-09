@@ -87,6 +87,28 @@ class AssistantPhotoAttachment {
   final Uint8List bytes;
 }
 
+class AssistantGuidanceRequest {
+  const AssistantGuidanceRequest({
+    required this.userMessage,
+    required this.fallbackInput,
+    required this.ragQuery,
+    this.includePhotoContext = false,
+    this.hasPhotoAttachmentWithoutVision = false,
+    this.userPhotoBytes,
+    this.userPhotoName,
+  });
+
+  final String userMessage;
+  final String fallbackInput;
+  final String ragQuery;
+  final bool includePhotoContext;
+  final bool hasPhotoAttachmentWithoutVision;
+  final Uint8List? userPhotoBytes;
+  final String? userPhotoName;
+
+  bool get usesImageInference => includePhotoContext && userPhotoBytes != null;
+}
+
 class EmergencyLaunchResult {
   const EmergencyLaunchResult({
     required this.isSuccess,
@@ -138,6 +160,8 @@ class AssistantViewModel extends ChangeNotifier {
   bool _isImportingLocalModel = false;
   bool _isSendingMessage = false;
   bool _isSendingEmergency = false;
+  AssistantGuidanceRequest? _lastGuidanceRequest;
+  int? _lastAssistantResponseIndex;
   final Map<SigapModelVariant, bool> _installedVariants = {};
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
@@ -164,6 +188,13 @@ class AssistantViewModel extends ChangeNotifier {
   bool get hasEmergencyContact =>
       (_emergencyContactName?.trim().isNotEmpty ?? false) &&
       (_emergencyContactPhone?.trim().isNotEmpty ?? false);
+  bool get canRegenerateLatestResponse =>
+      !_isSendingMessage &&
+      _lastGuidanceRequest != null &&
+      _lastAssistantResponseIndex != null &&
+      _lastAssistantResponseIndex == _messages.length - 1 &&
+      _messages.isNotEmpty &&
+      !_messages.last.isUser;
 
   bool get isBusy {
     return _isImportingLocalModel ||
@@ -326,7 +357,6 @@ class AssistantViewModel extends ChangeNotifier {
       userMessage: trimmedText,
       fallbackInput: trimmedText,
       ragQuery: trimmedText,
-      responseStreamBuilder: (prompt) => _gemmaService.generateResponse(prompt),
     );
   }
 
@@ -401,7 +431,6 @@ class AssistantViewModel extends ChangeNotifier {
         userMessage: 'Saya mengirim foto kondisi. Catatan: $trimmedDraft',
         fallbackInput: trimmedDraft,
         ragQuery: trimmedDraft,
-        responseStreamBuilder: (prompt) => _gemmaService.generateResponse(prompt),
         hasPhotoAttachmentWithoutVision: true,
         userPhotoBytes: imageBytes,
         userPhotoName: photoName,
@@ -422,13 +451,43 @@ class AssistantViewModel extends ChangeNotifier {
       ragQuery: trimmedDraft.isEmpty
           ? 'analisis foto kondisi darurat'
           : trimmedDraft,
-      responseStreamBuilder: (prompt) => _gemmaService.generateResponseWithImage(
-        prompt: prompt,
-        imageBytes: imageBytes,
-      ),
       includePhotoContext: true,
       userPhotoBytes: imageBytes,
       userPhotoName: photoName,
+    );
+  }
+
+  Future<void> regenerateLatestResponse() async {
+    final request = _lastGuidanceRequest;
+    final assistantIndex = _lastAssistantResponseIndex;
+    if (request == null ||
+        assistantIndex == null ||
+        _isSendingMessage ||
+        assistantIndex < 0 ||
+        assistantIndex >= _messages.length ||
+        _messages[assistantIndex].isUser) {
+      return;
+    }
+
+    _replaceAssistantMessageAt(assistantIndex, '');
+    _serviceStatus = 'Menyusun ulang respons terakhir...';
+    _isSendingMessage = true;
+    _notifySafely();
+
+    try {
+      await _gemmaService.resetConversation();
+    } catch (error) {
+      final message = 'Gagal mereset sesi percakapan untuk regenerate: $error';
+      _replaceAssistantMessageAt(assistantIndex, message);
+      _serviceStatus = message;
+      _isSendingMessage = false;
+      _notifySafely();
+      return;
+    }
+
+    await _executeGuidanceRequest(
+      request,
+      assistantMessageIndex: assistantIndex,
     );
   }
 
@@ -436,12 +495,25 @@ class AssistantViewModel extends ChangeNotifier {
     required String userMessage,
     required String fallbackInput,
     required String ragQuery,
-    required Stream<String> Function(String prompt) responseStreamBuilder,
     bool includePhotoContext = false,
     bool hasPhotoAttachmentWithoutVision = false,
     Uint8List? userPhotoBytes,
     String? userPhotoName,
   }) async {
+    final request = AssistantGuidanceRequest(
+      userMessage: userMessage,
+      fallbackInput: fallbackInput,
+      ragQuery: ragQuery,
+      includePhotoContext: includePhotoContext,
+      hasPhotoAttachmentWithoutVision: hasPhotoAttachmentWithoutVision,
+      userPhotoBytes: userPhotoBytes,
+      userPhotoName: userPhotoName,
+    );
+
+    await _startGuidanceRequest(request);
+  }
+
+  Future<void> _startGuidanceRequest(AssistantGuidanceRequest request) async {
     if (_isSendingMessage) {
       return;
     }
@@ -449,22 +521,34 @@ class AssistantViewModel extends ChangeNotifier {
     _messages.add(
       AssistantMessage(
         role: 'user',
-        text: userMessage,
-        photoBytes: userPhotoBytes,
-        photoName: userPhotoName,
+        text: request.userMessage,
+        photoBytes: request.userPhotoBytes,
+        photoName: request.userPhotoName,
       ),
     );
     _messages.add(const AssistantMessage(role: 'assistant', text: ''));
+    _lastAssistantResponseIndex = _messages.length - 1;
+    _lastGuidanceRequest = request;
     _isSendingMessage = true;
     _notifySafely();
 
+    await _executeGuidanceRequest(
+      request,
+      assistantMessageIndex: _lastAssistantResponseIndex!,
+    );
+  }
+
+  Future<void> _executeGuidanceRequest(
+    AssistantGuidanceRequest request, {
+    required int assistantMessageIndex,
+  }) async {
     if (!_gemmaService.isReady) {
       await _gemmaService.initializeReadyModel();
     }
 
     if (!_gemmaService.isReady) {
       _serviceStatus = _gemmaService.statusMessage;
-      _replaceLastAssistantMessage(_serviceStatus);
+      _replaceAssistantMessageAt(assistantMessageIndex, _serviceStatus);
       _isSendingMessage = false;
       _notifySafely();
       return;
@@ -473,24 +557,29 @@ class AssistantViewModel extends ChangeNotifier {
     final buffer = StringBuffer();
 
     try {
-      final ragContext = await _ragService.query(ragQuery, limit: 3);
+      final ragContext = await _ragService.query(request.ragQuery, limit: 3);
       final prompt = _buildActiveGuidancePrompt(
-        userInput: fallbackInput,
+        userInput: request.fallbackInput,
         ragContext: ragContext,
-        includePhotoContext: includePhotoContext,
-        hasPhotoAttachmentWithoutVision: hasPhotoAttachmentWithoutVision,
+        includePhotoContext: request.includePhotoContext,
+        hasPhotoAttachmentWithoutVision:
+            request.hasPhotoAttachmentWithoutVision,
       );
-      await for (final token in responseStreamBuilder(prompt)) {
+      await for (final token in _streamResponseForRequest(request, prompt)) {
         buffer.write(token);
-        _replaceLastAssistantMessage(_cleanDisplayText(buffer.toString()));
+        _replaceAssistantMessageAt(
+          assistantMessageIndex,
+          _cleanDisplayText(buffer.toString()),
+        );
         _notifySafely();
       }
       final guidance = _buildStructuredGuidance(
         rawText: buffer.toString(),
-        fallbackInput: fallbackInput,
+        fallbackInput: request.fallbackInput,
       );
       _urgency = guidance.urgency;
-      _replaceLastAssistantMessage(
+      _replaceAssistantMessageAt(
+        assistantMessageIndex,
         guidance.summary,
         guidance: guidance,
       );
@@ -498,7 +587,7 @@ class AssistantViewModel extends ChangeNotifier {
       await _handleGuidanceSpeech(guidance);
     } catch (error) {
       final message = 'Terjadi kesalahan saat memproses pesan: $error';
-      _replaceLastAssistantMessage(message);
+      _replaceAssistantMessageAt(assistantMessageIndex, message);
       _serviceStatus = message;
     } finally {
       _isSendingMessage = false;
@@ -622,6 +711,20 @@ class AssistantViewModel extends ChangeNotifier {
     _notifySafely();
   }
 
+  Stream<String> _streamResponseForRequest(
+    AssistantGuidanceRequest request,
+    String prompt,
+  ) {
+    if (request.usesImageInference) {
+      return _gemmaService.generateResponseWithImage(
+        prompt: prompt,
+        imageBytes: request.userPhotoBytes!,
+      );
+    }
+
+    return _gemmaService.generateResponse(prompt);
+  }
+
   void _replaceLastAssistantMessage(
     String text, {
     AssistantGuidance? guidance,
@@ -630,7 +733,23 @@ class AssistantViewModel extends ChangeNotifier {
       return;
     }
 
-    _messages[_messages.length - 1] = AssistantMessage(
+    _replaceAssistantMessageAt(
+      _messages.length - 1,
+      text,
+      guidance: guidance,
+    );
+  }
+
+  void _replaceAssistantMessageAt(
+    int index,
+    String text, {
+    AssistantGuidance? guidance,
+  }) {
+    if (index < 0 || index >= _messages.length) {
+      return;
+    }
+
+    _messages[index] = AssistantMessage(
       role: 'assistant',
       text: text,
       guidance: guidance,

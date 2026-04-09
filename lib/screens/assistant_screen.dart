@@ -35,6 +35,14 @@ class _AssistantScreenBody extends StatefulWidget {
 }
 
 class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
+  static const List<String> _photoDescriptionPrompts = [
+    'Lokasi luka di...',
+    'Jenis luka: lecet/sayat/bakar',
+    'Perdarahan: tidak ada/ringan/aktif',
+    'Ukuran atau luas kira-kira...',
+    'Korban sadar dan bisa merespons',
+  ];
+
   late final TextEditingController _controller;
   AssistantPhotoAttachment? _pendingPhoto;
 
@@ -103,18 +111,29 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                           itemCount: viewModel.messages.length,
                           itemBuilder: (context, index) {
                             final message = viewModel.messages[index];
+                            final canRegenerateMessage =
+                                !message.isUser &&
+                                index == viewModel.messages.length - 1 &&
+                                viewModel.canRegenerateLatestResponse;
                             if (message.hasStructuredGuidance) {
                               return _GuidanceCard(
                                 message: message,
                                 speechRate: viewModel.ttsSpeechRate,
-                                onReplay: () => viewModel.replayGuidance(
-                                  message.guidance!,
-                                ),
+                                onReplay: () =>
+                                    viewModel.replayGuidance(message.guidance!),
+                                onRegenerate: canRegenerateMessage
+                                    ? viewModel.regenerateLatestResponse
+                                    : null,
                                 onAdjustSpeed: () =>
                                     _showTtsSpeedSheet(context, viewModel),
                               );
                             }
-                            return _MessageBubble(message: message);
+                            return _MessageBubble(
+                              message: message,
+                              onRegenerate: canRegenerateMessage
+                                  ? viewModel.regenerateLatestResponse
+                                  : null,
+                            );
                           },
                         ))
                 : _ModelSetupPanel(
@@ -133,19 +152,30 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                   ),
           ),
           if (viewModel.isModelReady)
-            _BottomInputBar(
-              controller: _controller,
-              onSend: () => _sendMessage(viewModel),
-              onVoice: viewModel.startVoice,
-              onPhoto: () => _pickPhoto(viewModel),
-              onEmergency: () => _sendEmergency(context, viewModel),
-              isBusy: viewModel.isSendingEmergency,
-              emergencyContactName: viewModel.emergencyContactName,
-              emergencyContactPhone: viewModel.emergencyContactPhone,
-              onEditEmergencyContact: () =>
-                  _showEmergencyContactDialog(context, viewModel),
-              pendingPhoto: _pendingPhoto,
-              onRemovePhoto: _clearPendingPhoto,
+            SafeArea(
+              top: false,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).viewInsets.bottom > 0
+                      ? 220
+                      : 320,
+                ),
+                child: _BottomInputBar(
+                  controller: _controller,
+                  onSend: () => _sendMessage(viewModel),
+                  onVoice: viewModel.startVoice,
+                  onPhoto: () => _pickPhoto(viewModel),
+                  onEmergency: () => _sendEmergency(context, viewModel),
+                  isBusy: viewModel.isSendingEmergency,
+                  emergencyContactName: viewModel.emergencyContactName,
+                  emergencyContactPhone: viewModel.emergencyContactPhone,
+                  onEditEmergencyContact: () =>
+                      _showEmergencyContactDialog(context, viewModel),
+                  pendingPhoto: _pendingPhoto,
+                  onRemovePhoto: _clearPendingPhoto,
+                  onApplyPhotoPrompt: _applyPhotoPrompt,
+                ),
+              ),
             ),
         ],
       ),
@@ -192,6 +222,16 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     setState(() {
       _pendingPhoto = null;
     });
+  }
+
+  void _applyPhotoPrompt(String prompt) {
+    final currentText = _controller.text.trim();
+    final nextText = currentText.isEmpty ? prompt : '$currentText; $prompt';
+
+    _controller.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: nextText.length),
+    );
   }
 
   Future<void> _downloadModel(
@@ -567,7 +607,10 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     _dismissActiveInput(context);
 
     if (!viewModel.hasEmergencyContact) {
-      final didSaveContact = await _showEmergencyContactDialog(context, viewModel);
+      final didSaveContact = await _showEmergencyContactDialog(
+        context,
+        viewModel,
+      );
       if (didSaveContact != true || !context.mounted) {
         return;
       }
@@ -589,7 +632,9 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     messenger.showSnackBar(
       SnackBar(
         content: Text(result.message),
-        backgroundColor: result.isSuccess ? AppColors.urgencyGreen : AppColors.red,
+        backgroundColor: result.isSuccess
+            ? AppColors.urgencyGreen
+            : AppColors.red,
       ),
     );
 
@@ -726,9 +771,7 @@ class _CompactStatusStrip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           decoration: BoxDecoration(
             border: Border(
-              bottom: BorderSide(
-                color: AppColors.navy.withValues(alpha: 0.08),
-              ),
+              bottom: BorderSide(color: AppColors.navy.withValues(alpha: 0.08)),
             ),
           ),
           child: Row(
@@ -743,12 +786,12 @@ class _CompactStatusStrip extends StatelessWidget {
               const SizedBox(width: 8),
               _InlineStatusPill(
                 label: modelLabel,
-                backgroundColor: (isReady
-                        ? AppColors.urgencyGreen
-                        : AppColors.navy)
-                    .withValues(alpha: 0.08),
-                foregroundColor:
-                    isReady ? AppColors.urgencyGreen : AppColors.navy,
+                backgroundColor:
+                    (isReady ? AppColors.urgencyGreen : AppColors.navy)
+                        .withValues(alpha: 0.08),
+                foregroundColor: isReady
+                    ? AppColors.urgencyGreen
+                    : AppColors.navy,
                 icon: isReady ? Icons.check_circle_outline : Icons.memory,
               ),
               const SizedBox(width: 10),
@@ -1556,8 +1599,7 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final prompt = switch (inputMode) {
       'voice' => 'Mode suara dipilih.\nModel akan dipakai setelah Gemma siap.',
-      'photo' =>
-        'Mode foto dipilih.\nFitur vision belum diaktifkan pada tahap PRI-51.',
+      'photo' => 'Mode foto dipilih.',
       _ => 'Ceritakan kondisi darurat\natau tekan BICARA',
     };
 
@@ -1608,12 +1650,14 @@ class _EmptyState extends StatelessWidget {
 
 class _MessageBubble extends StatelessWidget {
   final AssistantMessage message;
+  final Future<void> Function()? onRegenerate;
 
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.onRegenerate});
 
   @override
   Widget build(BuildContext context) {
-    final isAssistantPlaceholder = !message.isUser && message.text.trim().isEmpty;
+    final isAssistantPlaceholder =
+        !message.isUser && message.text.trim().isEmpty;
     final bubbleTextColor = message.isUser ? Colors.white : AppColors.textDark;
 
     return Align(
@@ -1680,13 +1724,25 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       ),
                     ],
-                    if (message.text.trim().isNotEmpty) const SizedBox(height: 10),
+                    if (message.text.trim().isNotEmpty)
+                      const SizedBox(height: 10),
                   ],
                   if (message.text.trim().isNotEmpty)
                     Text(
                       message.text,
                       style: TextStyle(color: bubbleTextColor),
                     ),
+                  if (onRegenerate != null && !message.isUser) ...[
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: onRegenerate,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('Regenerate'),
+                      ),
+                    ),
+                  ],
                 ],
               ),
       ),
@@ -1699,12 +1755,14 @@ class _GuidanceCard extends StatelessWidget {
     required this.message,
     required this.speechRate,
     required this.onReplay,
+    required this.onRegenerate,
     required this.onAdjustSpeed,
   });
 
   final AssistantMessage message;
   final double speechRate;
   final Future<void> Function() onReplay;
+  final Future<void> Function()? onRegenerate;
   final Future<void> Function() onAdjustSpeed;
 
   @override
@@ -1756,26 +1814,30 @@ class _GuidanceCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          Row(
+          Wrap(
+            spacing: 2,
+            runSpacing: 2,
             children: [
               TextButton.icon(
                 onPressed: onReplay,
                 icon: const Icon(Icons.volume_up_outlined),
                 label: const Text('Putar Lagi'),
               ),
-              const SizedBox(width: 2),
               TextButton.icon(
                 onPressed: onAdjustSpeed,
                 icon: const Icon(Icons.speed_outlined),
                 label: Text(speechRate.toStringAsFixed(2)),
               ),
+              if (onRegenerate != null)
+                TextButton.icon(
+                  onPressed: onRegenerate,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Regenerate'),
+                ),
             ],
           ),
           const SizedBox(height: 8),
-          _WarningBox(
-            color: urgencyColor,
-            warning: guidance.warning,
-          ),
+          _WarningBox(color: urgencyColor, warning: guidance.warning),
           const SizedBox(height: 12),
           const Text(
             'Langkah yang disarankan',
@@ -1787,18 +1849,15 @@ class _GuidanceCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           for (var i = 0; i < guidance.steps.length; i++) ...[
-            _StepCard(
-              index: i + 1,
-              step: guidance.steps[i],
-            ),
+            _StepCard(index: i + 1, step: guidance.steps[i]),
             if (i != guidance.steps.length - 1) const SizedBox(height: 8),
           ],
           if (guidance.followUpQuestions.isNotEmpty) ...[
             const SizedBox(height: 10),
             Theme(
-              data: Theme.of(context).copyWith(
-                dividerColor: Colors.transparent,
-              ),
+              data: Theme.of(
+                context,
+              ).copyWith(dividerColor: Colors.transparent),
               child: ExpansionTile(
                 tilePadding: EdgeInsets.zero,
                 childrenPadding: EdgeInsets.zero,
@@ -1829,10 +1888,7 @@ class _GuidanceCard extends StatelessWidget {
 }
 
 class _WarningBox extends StatelessWidget {
-  const _WarningBox({
-    required this.color,
-    required this.warning,
-  });
+  const _WarningBox({required this.color, required this.warning});
 
   final Color color;
   final String warning;
@@ -1870,10 +1926,7 @@ class _WarningBox extends StatelessWidget {
 }
 
 class _StepCard extends StatelessWidget {
-  const _StepCard({
-    required this.index,
-    required this.step,
-  });
+  const _StepCard({required this.index, required this.step});
 
   final int index;
   final AssistantGuidanceStep step;
@@ -1990,6 +2043,7 @@ class _BottomInputBar extends StatelessWidget {
   final Future<bool?> Function() onEditEmergencyContact;
   final AssistantPhotoAttachment? pendingPhoto;
   final VoidCallback onRemovePhoto;
+  final ValueChanged<String> onApplyPhotoPrompt;
 
   const _BottomInputBar({
     required this.controller,
@@ -2003,6 +2057,7 @@ class _BottomInputBar extends StatelessWidget {
     required this.onEditEmergencyContact,
     required this.pendingPhoto,
     required this.onRemovePhoto,
+    required this.onApplyPhotoPrompt,
   });
 
   @override
@@ -2011,11 +2066,13 @@ class _BottomInputBar extends StatelessWidget {
         (emergencyContactName?.trim().isNotEmpty ?? false) &&
         (emergencyContactPhone?.trim().isNotEmpty ?? false);
 
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
-      child: Column(
-        children: [
+    return SingleChildScrollView(
+      child: Container(
+        color: Colors.white,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
           if (pendingPhoto != null) ...[
             Container(
               width: double.infinity,
@@ -2174,6 +2231,76 @@ class _BottomInputBar extends StatelessWidget {
               ),
             ],
           ),
+          if (pendingPhoto != null)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: AppColors.navy.withValues(alpha: 0.08),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.medical_information_outlined,
+                        size: 18,
+                        color: AppColors.navy,
+                      ),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Tambahkan deskripsi singkat. SIGAP masih memakai teks Anda, bukan analisis visual otomatis.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textGrey,
+                            height: 1.4,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: _AssistantScreenBodyState
+                          ._photoDescriptionPrompts
+                          .map(
+                            (prompt) => Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: ActionChip(
+                                label: Text(prompt),
+                                labelStyle: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.navy,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                backgroundColor: Colors.white,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                visualDensity: VisualDensity.compact,
+                                side: BorderSide(
+                                  color: AppColors.navy.withValues(alpha: 0.12),
+                                ),
+                                onPressed: () => onApplyPhotoPrompt(prompt),
+                              ),
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           const SizedBox(height: 8),
           Row(
             children: [
@@ -2193,7 +2320,9 @@ class _BottomInputBar extends StatelessWidget {
                   minLines: 1,
                   maxLines: 4,
                   decoration: InputDecoration(
-                    hintText: 'Ketik kondisi darurat...',
+                    hintText: pendingPhoto != null
+                        ? 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm, korban sadar.'
+                        : 'Ketik kondisi darurat...',
                     hintStyle: const TextStyle(color: AppColors.textGrey),
                     filled: true,
                     fillColor: AppColors.background,
@@ -2213,8 +2342,9 @@ class _BottomInputBar extends StatelessWidget {
                 icon: const Icon(Icons.send, color: AppColors.navy),
               ),
             ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
