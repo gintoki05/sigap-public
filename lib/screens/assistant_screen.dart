@@ -1,12 +1,11 @@
-import 'dart:async';
-
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../core/constants.dart';
 import '../services/gemma_service.dart';
+import '../viewmodels/assistant_view_model.dart';
 
-class AssistantScreen extends StatefulWidget {
+class AssistantScreen extends StatelessWidget {
   final String initialInputMode;
   final String? initialQuery;
 
@@ -17,44 +16,42 @@ class AssistantScreen extends StatefulWidget {
   });
 
   @override
-  State<AssistantScreen> createState() => _AssistantScreenState();
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => AssistantViewModel(inputMode: initialInputMode)..initialize(),
+      child: _AssistantScreenBody(initialQuery: initialQuery),
+    );
+  }
 }
 
-class _AssistantScreenState extends State<AssistantScreen> {
-  final GemmaService _gemmaService = GemmaService();
-  final Connectivity _connectivity = Connectivity();
-  final TextEditingController _controller = TextEditingController();
-  final List<Map<String, dynamic>> _messages = [];
-  final UrgencyLevel _urgency = UrgencyLevel.green;
-  bool _ttsEnabled = false;
-  String _serviceStatus = 'Model Gemma belum diinisialisasi.';
-  bool? _isOnWifi;
-  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+class _AssistantScreenBody extends StatefulWidget {
+  const _AssistantScreenBody({this.initialQuery});
+
+  final String? initialQuery;
+
+  @override
+  State<_AssistantScreenBody> createState() => _AssistantScreenBodyState();
+}
+
+class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
+  late final TextEditingController _controller;
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialQuery != null && widget.initialQuery!.trim().isNotEmpty) {
-      _controller.text = widget.initialQuery!.trim();
-    }
-    _serviceStatus = _gemmaService.statusMessage;
-    _gemmaService.addListener(_handleServiceUpdate);
-    _connectivitySubscription =
-        _connectivity.onConnectivityChanged.listen(_updateConnectivityState);
-    _refreshConnectivityState();
-    _initializeReadyModel();
+    _controller = TextEditingController(text: widget.initialQuery?.trim() ?? '');
   }
 
   @override
   void dispose() {
-    _connectivitySubscription?.cancel();
-    _gemmaService.removeListener(_handleServiceUpdate);
     _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final viewModel = context.watch<AssistantViewModel>();
+
     return Scaffold(
       appBar: AppBar(
         title: const Text(
@@ -63,43 +60,53 @@ class _AssistantScreenState extends State<AssistantScreen> {
         ),
         actions: [
           IconButton(
-            onPressed: () => setState(() => _ttsEnabled = !_ttsEnabled),
-            icon: Icon(_ttsEnabled ? Icons.volume_up : Icons.volume_off),
+            onPressed: viewModel.toggleTts,
+            icon: Icon(
+              viewModel.ttsEnabled ? Icons.volume_up : Icons.volume_off,
+            ),
             tooltip: 'Suarakan instruksi',
           ),
         ],
       ),
       body: Column(
         children: [
-          _UrgencyBanner(level: _urgency),
+          _UrgencyBanner(level: viewModel.urgency),
           _ModelStatusBanner(
-            isReady: _gemmaService.isReady,
-            status: _serviceStatus,
-            progress: _gemmaService.downloadProgress,
-            isDownloading: _gemmaService.isDownloading,
+            isReady: viewModel.isModelReady,
+            status: viewModel.serviceStatus,
+            progress: viewModel.downloadProgress,
+            isDownloading: viewModel.isDownloading,
+            isDeleting: viewModel.isDeleting,
+            eta: viewModel.downloadEta,
           ),
           Expanded(
-            child: _gemmaService.isReady
-                ? (_messages.isEmpty
+            child: viewModel.isModelReady
+                ? (viewModel.messages.isEmpty
                     ? _EmptyState(
-                        inputMode: widget.initialInputMode,
-                        serviceStatus: _serviceStatus,
+                        inputMode: viewModel.inputMode,
+                        serviceStatus: viewModel.serviceStatus,
                       )
                     : ListView.builder(
                         padding: const EdgeInsets.all(16),
-                        itemCount: _messages.length,
-                        itemBuilder: (context, i) =>
-                            _MessageBubble(message: _messages[i]),
+                        itemCount: viewModel.messages.length,
+                        itemBuilder: (context, index) => _MessageBubble(
+                          message: viewModel.messages[index],
+                        ),
                       ))
                 : _ModelSetupPanel(
-                    service: _gemmaService,
-                    status: _serviceStatus,
-                    isOnWifi: _isOnWifi,
-                    onDownload: _downloadModel,
-                    onRetry: _initializeReadyModel,
+                    service: viewModel.gemmaService,
+                    status: viewModel.serviceStatus,
+                    installedVariants: viewModel.installedVariants,
+                    isOnWifi: viewModel.isOnWifi,
+                    isDeleting: viewModel.isDeleting,
+                    onSelectVariant: viewModel.selectVariant,
+                    onDownload: () => _downloadModel(context, viewModel),
+                    onCancelDownload: () => _cancelDownload(context, viewModel),
+                    onDelete: () => _deleteModel(context, viewModel),
+                    onRetry: viewModel.initializeReadyModel,
                   ),
           ),
-          if (_gemmaService.isReady && _isBusy())
+          if (viewModel.isModelReady && viewModel.isBusy)
             const Padding(
               padding: EdgeInsets.all(8),
               child: Row(
@@ -118,150 +125,119 @@ class _AssistantScreenState extends State<AssistantScreen> {
                 ],
               ),
             ),
-          if (_gemmaService.isReady)
+          if (viewModel.isModelReady)
             _BottomInputBar(
               controller: _controller,
-              onSend: _sendMessage,
-              onVoice: _startVoice,
-              onPhoto: _pickPhoto,
-              onEmergency: _sendEmergency,
+              onSend: () => _sendMessage(viewModel),
+              onVoice: viewModel.startVoice,
+              onPhoto: viewModel.pickPhoto,
+              onEmergency: viewModel.sendEmergency,
             ),
         ],
       ),
     );
   }
 
-  bool _isBusy() {
-    return _gemmaService.state == GemmaServiceState.initializing ||
-        _gemmaService.state == GemmaServiceState.checking;
-  }
-
-  void _handleServiceUpdate() {
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _serviceStatus = _gemmaService.statusMessage;
-    });
-  }
-
-  Future<void> _refreshConnectivityState() async {
-    final results = await _connectivity.checkConnectivity();
-    _updateConnectivityState(results);
-  }
-
-  void _updateConnectivityState(List<ConnectivityResult> results) {
-    if (!mounted) {
+  Future<void> _sendMessage(AssistantViewModel viewModel) async {
+    final text = _controller.text.trim();
+    if (text.isEmpty) {
       return;
     }
 
-    final isOnWifi = results.contains(ConnectivityResult.wifi);
-    if (_isOnWifi == isOnWifi) {
-      return;
-    }
-
-    setState(() {
-      _isOnWifi = isOnWifi;
-    });
+    _controller.clear();
+    await viewModel.sendMessage(text);
   }
 
-  Future<void> _initializeReadyModel() async {
-    setState(() {});
-    await _gemmaService.initializeReadyModel();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _serviceStatus = _gemmaService.statusMessage;
-    });
-  }
-
-  Future<void> _downloadModel() async {
-    if (_isOnWifi == false) {
+  Future<void> _downloadModel(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    if (viewModel.isOnWifi == false) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Text(
-            'Anda tidak sedang memakai Wi-Fi. Download model Gemma 4 sekitar 4.3 GB dan bisa menghabiskan kuota data seluler.',
+            'Anda tidak sedang memakai Wi-Fi. Download ${viewModel.gemmaService.selectedModelLabel} ${viewModel.gemmaService.estimatedModelSizeLabel} dan bisa menghabiskan kuota data seluler.',
           ),
-          duration: Duration(seconds: 5),
+          duration: const Duration(seconds: 5),
         ),
       );
     }
 
-    setState(() {});
-    await _gemmaService.downloadAndInstallModel();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _serviceStatus = _gemmaService.statusMessage;
-    });
+    await viewModel.downloadModel();
   }
 
-  Future<void> _sendMessage() async {
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
-
-    setState(() {
-      _messages.add({'role': 'user', 'text': text});
-      _controller.clear();
-      _messages.add({'role': 'assistant', 'text': ''});
-    });
-
-    if (!_gemmaService.isReady) {
-      await _gemmaService.initializeReadyModel();
-    }
-
-    if (!_gemmaService.isReady) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _serviceStatus = _gemmaService.statusMessage;
-        _messages.last['text'] = _serviceStatus;
-      });
+  Future<void> _deleteModel(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    final isInstalled = await viewModel.isSelectedModelInstalled();
+    if (!context.mounted || !isInstalled) {
       return;
     }
 
-    final buffer = StringBuffer();
+    final modelLabel = viewModel.gemmaService.selectedModelLabel;
+    final modelSize = viewModel.gemmaService.estimatedModelSizeLabel;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Hapus model?'),
+        content: Text(
+          '$modelLabel akan dihapus dari perangkat dan ruang penyimpanan sekitar $modelSize akan dibebaskan. Anda bisa mengunduhnya lagi kapan saja.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Hapus'),
+          ),
+        ],
+      ),
+    );
 
-    try {
-      await for (final token in _gemmaService.generateResponse(text)) {
-        buffer.write(token);
-        if (!mounted) {
-          return;
-        }
-        setState(() {
-          _messages.last['text'] = buffer.toString();
-        });
-      }
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _serviceStatus = _gemmaService.statusMessage;
-      });
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _messages.last['text'] = 'Terjadi kesalahan saat memproses pesan: $error';
-        _serviceStatus = _messages.last['text'] as String;
-      });
+    if (confirmed != true) {
+      return;
     }
+
+    await viewModel.deleteSelectedModel();
   }
 
-  void _startVoice() {
-    // TODO: Implement voice input via flutter_gemma audio
-  }
+  Future<void> _cancelDownload(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    if (!viewModel.isDownloading) {
+      return;
+    }
 
-  void _pickPhoto() {
-    // TODO: Implement image_picker + flutter_gemma vision
-  }
+    final modelLabel = viewModel.gemmaService.selectedModelLabel;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Batalkan download?'),
+        content: Text(
+          'Download $modelLabel akan dihentikan sekarang. Anda bisa memulainya lagi kapan saja nanti.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Lanjut download'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Batalkan'),
+          ),
+        ],
+      ),
+    );
 
-  void _sendEmergency() {
-    // TODO: Implement geolocator + url_launcher WhatsApp
+    if (confirmed != true || !context.mounted) {
+      return;
+    }
+
+    await viewModel.cancelDownload();
   }
 }
 
@@ -270,12 +246,16 @@ class _ModelStatusBanner extends StatelessWidget {
   final String status;
   final int progress;
   final bool isDownloading;
+  final bool isDeleting;
+  final Duration? eta;
 
   const _ModelStatusBanner({
     required this.isReady,
     required this.status,
     required this.progress,
     required this.isDownloading,
+    required this.isDeleting,
+    required this.eta,
   });
 
   @override
@@ -284,6 +264,13 @@ class _ModelStatusBanner extends StatelessWidget {
         ? AppColors.urgencyGreen.withValues(alpha: 0.12)
         : AppColors.urgencyYellow.withValues(alpha: 0.18);
     final foregroundColor = isReady ? AppColors.urgencyGreen : AppColors.navy;
+    final statusLabel = isReady
+        ? 'Model siap'
+        : isDeleting
+            ? 'Menghapus model'
+        : isDownloading
+            ? 'Sedang download'
+            : 'Perlu setup';
 
     return Container(
       width: double.infinity,
@@ -292,6 +279,22 @@ class _ModelStatusBanner extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.85),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              statusLabel,
+              style: TextStyle(
+                color: foregroundColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -321,37 +324,92 @@ class _ModelStatusBanner extends StatelessWidget {
               color: AppColors.navy,
               backgroundColor: Colors.white.withValues(alpha: 0.5),
             ),
+            if (eta != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                eta == Duration.zero
+                    ? 'Menyelesaikan proses akhir...'
+                    : 'Sisa sekitar ${_formatEta(eta!)}',
+                style: TextStyle(
+                  color: foregroundColor,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ] else ...[
+              const SizedBox(height: 6),
+              Text(
+                'Menghitung sisa waktu...',
+                style: TextStyle(
+                  color: foregroundColor,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ],
         ],
       ),
     );
+  }
+
+  String _formatEta(Duration eta) {
+    if (eta.inHours >= 1) {
+      final hours = eta.inHours;
+      final minutes = eta.inMinutes.remainder(60);
+      return minutes > 0 ? '$hours jam $minutes menit' : '$hours jam';
+    }
+    if (eta.inMinutes >= 1) {
+      final minutes = eta.inMinutes;
+      final seconds = eta.inSeconds.remainder(60);
+      return seconds > 0 ? '$minutes menit $seconds detik' : '$minutes menit';
+    }
+    return '${eta.inSeconds.clamp(1, 59)} detik';
   }
 }
 
 class _ModelSetupPanel extends StatelessWidget {
   final GemmaService service;
   final String status;
+  final Map<SigapModelVariant, bool> installedVariants;
   final bool? isOnWifi;
+  final bool isDeleting;
+  final Future<void> Function(SigapModelVariant variant) onSelectVariant;
   final Future<void> Function() onDownload;
+  final Future<void> Function() onCancelDownload;
+  final Future<void> Function() onDelete;
   final Future<void> Function() onRetry;
 
   const _ModelSetupPanel({
     required this.service,
     required this.status,
+    required this.installedVariants,
     required this.isOnWifi,
+    required this.isDeleting,
+    required this.onSelectVariant,
     required this.onDownload,
+    required this.onCancelDownload,
+    required this.onDelete,
     required this.onRetry,
   });
 
   @override
   Widget build(BuildContext context) {
     final isBusy = service.state == GemmaServiceState.downloading ||
+        service.state == GemmaServiceState.deleting ||
         service.state == GemmaServiceState.initializing ||
         service.state == GemmaServiceState.checking;
+    final selectedModelInstalled =
+        installedVariants[service.selectedVariant] ?? false;
     final showDownloadButton =
         service.needsDownload && !service.hasConfiguredLocalPath;
     final showRetryButton =
         !showDownloadButton && service.canRetry && !service.isDownloading;
+    final showDeleteButton =
+        !service.hasConfiguredLocalPath &&
+        !showDownloadButton &&
+        !isDeleting &&
+        !service.isDownloading;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -390,9 +448,9 @@ class _ModelSetupPanel extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    Expanded(
+                    const Expanded(
                       child: Text(
-                        'Setup Gemma 4 Sekali Saja',
+                        'Pilih Model Offline',
                         style: TextStyle(
                           fontSize: 20,
                           fontWeight: FontWeight.bold,
@@ -404,7 +462,7 @@ class _ModelSetupPanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'SIGAP perlu mengunduh model Gemma 4 E4B-IT ke perangkat Anda. Setelah selesai, asisten AI bisa dipakai secara lokal dan offline tanpa mengunduh ulang.',
+                  'Pilih model yang ingin disiapkan di perangkat, lalu unduh sekali agar asisten AI bisa dipakai secara lokal tanpa internet.',
                   style: TextStyle(
                     fontSize: 14,
                     color: AppColors.textDark,
@@ -412,9 +470,44 @@ class _ModelSetupPanel extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.background,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: AppColors.navy.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: const Text(
+                    'Ringkasnya: pilih E2B bila ingin mulai lebih cepat. Pilih E4B bila device Anda kuat dan Anda ingin kualitas respons yang lebih tinggi.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textDark,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                for (final variant in GemmaService.supportedVariants) ...[
+                  _VariantOptionCard(
+                    variant: variant,
+                    isSelected: service.selectedVariant == variant,
+                    isInstalled: installedVariants[variant] ?? false,
+                    onTap: isBusy ? null : () => onSelectVariant(variant),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+                const SizedBox(height: 4),
+                _SetupFact(
+                  icon: Icons.memory_outlined,
+                  label: 'Model terpilih',
+                  value: service.selectedModelLabel,
+                ),
                 _SetupFact(
                   icon: Icons.sd_storage_outlined,
-                  label: 'Ukuran model',
+                  label: 'Ukuran',
                   value: service.estimatedModelSizeLabel,
                 ),
                 _SetupFact(
@@ -504,34 +597,119 @@ class _ModelSetupPanel extends StatelessWidget {
                       color: AppColors.textGrey,
                     ),
                   ),
+                  if (service.downloadEta != null) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      service.downloadEta == Duration.zero
+                          ? 'Menyelesaikan proses akhir...'
+                          : 'Sisa sekitar ${_formatEta(service.downloadEta!)}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textGrey,
+                      ),
+                    ),
+                  ] else ...[
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Menghitung sisa waktu...',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textGrey,
+                      ),
+                    ),
+                  ],
                 ],
                 const SizedBox(height: 20),
-                if (showDownloadButton)
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: isBusy ? null : onDownload,
-                      icon: const Icon(Icons.download),
-                      label: const Text('Download Model Sekarang'),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: isBusy
+                        ? null
+                        : showDownloadButton
+                            ? onDownload
+                            : onRetry,
+                    icon: Icon(
+                      showDownloadButton
+                          ? Icons.download
+                          : selectedModelInstalled
+                              ? Icons.play_arrow
+                              : Icons.refresh,
+                    ),
+                    label: Text(
+                      showDownloadButton
+                          ? 'Download ${service.selectedModelLabel}'
+                          : selectedModelInstalled
+                              ? 'Gunakan ${service.selectedModelLabel}'
+                              : 'Periksa ${service.selectedModelLabel}',
                     ),
                   ),
+                ),
                 if (showRetryButton)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: isBusy ? null : onRetry,
+                        icon: const Icon(Icons.refresh),
+                        label: Text(
+                          service.hasConfiguredLocalPath
+                              ? 'Coba Muat Model Lokal Lagi'
+                              : 'Periksa Lagi Status Model',
+                        ),
+                      ),
+                    ),
+                  ),
+                if (showDeleteButton) ...[
+                  const SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: isBusy ? null : onRetry,
-                      icon: const Icon(Icons.refresh),
-                      label: Text(service.hasConfiguredLocalPath
-                          ? 'Coba Muat Model Lokal Lagi'
-                          : 'Periksa Lagi Status Model'),
+                      onPressed: isBusy ? null : onDelete,
+                      icon: const Icon(Icons.delete_outline),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.red,
+                        side: const BorderSide(color: AppColors.red),
+                      ),
+                      label: Text('Hapus ${service.selectedModelLabel}'),
                     ),
                   ),
+                ],
+                if (service.isDownloading) ...[
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: onCancelDownload,
+                      icon: const Icon(Icons.close),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.red,
+                        side: const BorderSide(color: AppColors.red),
+                      ),
+                      label: const Text('Batalkan Download'),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  String _formatEta(Duration eta) {
+    if (eta.inHours >= 1) {
+      final hours = eta.inHours;
+      final minutes = eta.inMinutes.remainder(60);
+      return minutes > 0 ? '$hours jam $minutes menit' : '$hours jam';
+    }
+    if (eta.inMinutes >= 1) {
+      final minutes = eta.inMinutes;
+      final seconds = eta.inSeconds.remainder(60);
+      return seconds > 0 ? '$minutes menit $seconds detik' : '$minutes menit';
+    }
+    return '${eta.inSeconds.clamp(1, 59)} detik';
   }
 }
 
@@ -577,6 +755,223 @@ class _SetupFact extends StatelessWidget {
   }
 }
 
+class _VariantOptionCard extends StatelessWidget {
+  final SigapModelVariant variant;
+  final bool isSelected;
+  final bool isInstalled;
+  final VoidCallback? onTap;
+
+  const _VariantOptionCard({
+    required this.variant,
+    required this.isSelected,
+    required this.isInstalled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final benefitColor = variant.isRecommended
+        ? AppColors.urgencyGreen
+        : AppColors.red;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Ink(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? AppColors.red.withValues(alpha: 0.08)
+                : AppColors.background,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isSelected
+                  ? AppColors.red
+                  : AppColors.navy.withValues(alpha: 0.12),
+              width: isSelected ? 1.4 : 1,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      variant.label,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.navy,
+                      ),
+                    ),
+                  ),
+                  if (variant.isRecommended)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.urgencyGreen.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: const Text(
+                        'Rekomendasi',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.urgencyGreen,
+                        ),
+                      ),
+                    ),
+                  if (isInstalled) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.navy.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: const Text(
+                        'Sudah terpasang',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.navy,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                variant.setupDescription,
+                style: const TextStyle(
+                  fontSize: 13,
+                  color: AppColors.textDark,
+                  height: 1.4,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _MiniPill(
+                    icon: Icons.bolt_outlined,
+                    label: variant.bestForLabel,
+                    backgroundColor: benefitColor.withValues(alpha: 0.10),
+                    foregroundColor: benefitColor,
+                  ),
+                  _MiniPill(
+                    icon: Icons.offline_bolt_outlined,
+                    label: 'Offline penuh',
+                    backgroundColor: AppColors.navy.withValues(alpha: 0.08),
+                    foregroundColor: AppColors.navy,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.sd_storage_outlined,
+                        size: 16,
+                        color: AppColors.textGrey,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        variant.estimatedSizeLabel,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.bolt_outlined,
+                        size: 16,
+                        color: AppColors.textGrey,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        variant.bestForLabel,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MiniPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color backgroundColor;
+  final Color foregroundColor;
+
+  const _MiniPill({
+    required this.icon,
+    required this.label,
+    required this.backgroundColor,
+    required this.foregroundColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: foregroundColor),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: foregroundColor,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _UrgencyBanner extends StatelessWidget {
   final UrgencyLevel level;
 
@@ -593,7 +988,10 @@ class _UrgencyBanner extends StatelessWidget {
           Container(
             width: 10,
             height: 10,
-            decoration: BoxDecoration(color: level.color, shape: BoxShape.circle),
+            decoration: BoxDecoration(
+              color: level.color,
+              shape: BoxShape.circle,
+            ),
           ),
           const SizedBox(width: 8),
           Text(
@@ -658,29 +1056,32 @@ class _EmptyState extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  final Map<String, dynamic> message;
+  final AssistantMessage message;
 
   const _MessageBubble({required this.message});
 
   @override
   Widget build(BuildContext context) {
-    final isUser = message['role'] == 'user';
     return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      alignment:
+          message.isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         constraints:
             BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
         decoration: BoxDecoration(
-          color: isUser ? AppColors.navy : Colors.white,
+          color: message.isUser ? AppColors.navy : Colors.white,
           borderRadius: BorderRadius.circular(16),
-          border:
-              isUser ? null : Border.all(color: AppColors.navy.withValues(alpha: 0.1)),
+          border: message.isUser
+              ? null
+              : Border.all(color: AppColors.navy.withValues(alpha: 0.1)),
         ),
         child: Text(
-          message['text'] as String,
-          style: TextStyle(color: isUser ? Colors.white : AppColors.textDark),
+          message.text,
+          style: TextStyle(
+            color: message.isUser ? Colors.white : AppColors.textDark,
+          ),
         ),
       ),
     );

@@ -2,18 +2,71 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
+import 'package:flutter_gemma/mobile/flutter_gemma_mobile.dart';
 
 enum GemmaServiceState {
   idle,
   checking,
   needsDownload,
   downloading,
+  deleting,
   initializing,
   missingConfiguration,
   missingModelPath,
   missingModelFile,
   ready,
   error,
+}
+
+enum SigapModelVariant { e2b, e4b }
+
+extension SigapModelVariantExtension on SigapModelVariant {
+  String get label {
+    switch (this) {
+      case SigapModelVariant.e2b:
+        return 'Gemma 4 E2B-IT';
+      case SigapModelVariant.e4b:
+        return 'Gemma 4 E4B-IT';
+    }
+  }
+
+  String get estimatedSizeLabel {
+    switch (this) {
+      case SigapModelVariant.e2b:
+        return 'sekitar 2.5 GB';
+      case SigapModelVariant.e4b:
+        return 'sekitar 4.3 GB';
+    }
+  }
+
+  String get setupDescription {
+    switch (this) {
+      case SigapModelVariant.e2b:
+        return 'Pilihan paling aman untuk setup awal. Download lebih ringan dan lebih ramah untuk device kelas menengah.';
+      case SigapModelVariant.e4b:
+        return 'Pilihan kualitas respons lebih tinggi. Cocok saat storage longgar dan device sudah siap menangani model besar.';
+    }
+  }
+
+  bool get isRecommended => this == SigapModelVariant.e2b;
+
+  String get bestForLabel {
+    switch (this) {
+      case SigapModelVariant.e2b:
+        return 'Setup tercepat';
+      case SigapModelVariant.e4b:
+        return 'Respons lebih kaya';
+    }
+  }
+
+  String get defaultUrl {
+    switch (this) {
+      case SigapModelVariant.e2b:
+        return 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm';
+      case SigapModelVariant.e4b:
+        return 'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm';
+    }
+  }
 }
 
 class GemmaService extends ChangeNotifier {
@@ -23,9 +76,10 @@ class GemmaService extends ChangeNotifier {
   static const String modelPathEnvKey = 'SIGAP_GEMMA_MODEL_PATH';
   static const String modelUrlEnvKey = 'SIGAP_GEMMA_MODEL_URL';
   static const String modelAuthTokenEnvKey = 'SIGAP_GEMMA_MODEL_AUTH_TOKEN';
-  static const String defaultDemoModelUrl =
-      'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm';
-  static const String modelVariantLabel = 'Gemma 4 E4B-IT';
+  static const List<SigapModelVariant> supportedVariants = [
+    SigapModelVariant.e2b,
+    SigapModelVariant.e4b,
+  ];
   static const String configuredModelPath =
       String.fromEnvironment(modelPathEnvKey);
   static const String configuredModelUrl = String.fromEnvironment(modelUrlEnvKey);
@@ -39,19 +93,25 @@ class GemmaService extends ChangeNotifier {
   GemmaServiceState _state = GemmaServiceState.idle;
   String _statusMessage = 'Model Gemma belum diinisialisasi.';
   int _downloadProgress = 0;
+  Duration? _downloadEta;
+  DateTime? _lastProgressAt;
+  int? _lastProgressValue;
+  double? _smoothedProgressPerSecond;
+  CancelToken? _downloadCancelToken;
   InferenceModel? _model;
   InferenceChat? _chat;
   PreferredBackend? _activeBackend;
+  SigapModelVariant _selectedVariant = SigapModelVariant.e2b;
 
   GemmaServiceState get state => _state;
   String get statusMessage => _statusMessage;
   int get downloadProgress => _downloadProgress;
+  Duration? get downloadEta => _downloadEta;
   bool get isReady => _state == GemmaServiceState.ready && _model != null;
   bool get isDownloading => _state == GemmaServiceState.downloading;
+  bool get isDeleting => _state == GemmaServiceState.deleting;
   bool get hasConfiguredLocalPath => configuredModelPath.trim().isNotEmpty;
   bool get hasConfiguredModelUrl => configuredModelUrl.trim().isNotEmpty;
-  String get effectiveModelUrl =>
-      configuredModelUrl.trim().isNotEmpty ? configuredModelUrl.trim() : defaultDemoModelUrl;
   bool get needsDownload =>
       _state == GemmaServiceState.needsDownload ||
       _state == GemmaServiceState.missingConfiguration;
@@ -61,10 +121,32 @@ class GemmaService extends ChangeNotifier {
       _state == GemmaServiceState.missingModelPath ||
       _state == GemmaServiceState.missingConfiguration;
   PreferredBackend? get activeBackend => _activeBackend;
-  String get estimatedModelSizeLabel => 'sekitar 4.3 GB';
+  SigapModelVariant get selectedVariant => _selectedVariant;
+  String get selectedModelLabel => _selectedVariant.label;
+  String get estimatedModelSizeLabel => _selectedVariant.estimatedSizeLabel;
+  String get selectedModelDescription => _selectedVariant.setupDescription;
+  String get effectiveModelUrl =>
+      configuredModelUrl.trim().isNotEmpty
+          ? configuredModelUrl.trim()
+          : _selectedVariant.defaultUrl;
 
   Future<void> initialize() async {
     await initializeReadyModel();
+  }
+
+  Future<void> selectModelVariant(SigapModelVariant variant) async {
+    if (_selectedVariant == variant) {
+      return;
+    }
+
+    await _releaseResources();
+    _selectedVariant = variant;
+    _activeBackend = null;
+    _setState(
+      GemmaServiceState.idle,
+      '${variant.label} dipilih. ${variant.isRecommended ? 'Model ini direkomendasikan untuk mulai lebih cepat.' : 'Gunakan opsi ini bila Anda ingin kualitas respons lebih tinggi.'}',
+      progress: 0,
+    );
   }
 
   Future<void> initializeReadyModel() async {
@@ -75,16 +157,11 @@ class GemmaService extends ChangeNotifier {
     _isBusy = true;
     _setState(
       GemmaServiceState.checking,
-      'Memeriksa ketersediaan Gemma 4...',
+      'Memeriksa ketersediaan ${_selectedVariant.label}...',
     );
 
     try {
       await _ensurePluginInitialized();
-
-      if (FlutterGemma.hasActiveModel()) {
-        await _loadActiveModel();
-        return;
-      }
 
       if (hasConfiguredLocalPath) {
         await _installFromLocalPath();
@@ -99,15 +176,15 @@ class GemmaService extends ChangeNotifier {
       if (!hasConfiguredModelUrl) {
         _setState(
           GemmaServiceState.missingConfiguration,
-          'URL model custom belum dikonfigurasi. SIGAP akan memakai default demo model $modelVariantLabel dari LiteRT Community.',
+          'URL model custom belum dikonfigurasi. SIGAP akan memakai default ${_selectedVariant.label} dari LiteRT Community.',
           progress: 0,
         );
       }
 
-      if (await _isConfiguredNetworkModelInstalled()) {
+      if (await _isSelectedNetworkModelInstalled()) {
         _setState(
           GemmaServiceState.initializing,
-          'Menyiapkan model $modelVariantLabel yang sudah tersimpan...',
+          'Menyiapkan ${_selectedVariant.label} yang sudah tersimpan...',
         );
         await _installConfiguredNetworkModel(skipProgressUpdate: true);
         await _loadActiveModel();
@@ -116,13 +193,13 @@ class GemmaService extends ChangeNotifier {
 
       _setState(
         GemmaServiceState.needsDownload,
-        'Model $modelVariantLabel belum ada di perangkat. Unduh sekali agar SIGAP bisa dipakai offline setelah setup awal.',
+        '${_selectedVariant.label} belum ada di perangkat. Unduh sekali agar SIGAP bisa dipakai offline setelah setup awal.',
         progress: 0,
       );
     } catch (error) {
       _setState(
         GemmaServiceState.error,
-        'Gagal menyiapkan $modelVariantLabel: $error',
+        'Gagal menyiapkan ${_selectedVariant.label}: $error',
       );
       await _releaseResources();
     } finally {
@@ -139,14 +216,16 @@ class GemmaService extends ChangeNotifier {
     if (!hasConfiguredModelUrl) {
       _setState(
         GemmaServiceState.missingConfiguration,
-        'URL custom tidak diberikan. SIGAP akan memakai default demo model $modelVariantLabel.',
+        'URL custom tidak diberikan. SIGAP akan memakai default ${_selectedVariant.label}.',
       );
     }
 
     _isBusy = true;
+    _downloadCancelToken = CancelToken();
+    _resetDownloadEstimate();
     _setState(
       GemmaServiceState.downloading,
-      'Mengunduh $modelVariantLabel. Proses ini hanya perlu sekali, lalu model akan tersimpan di perangkat.',
+      'Mengunduh ${_selectedVariant.label}. Proses ini hanya perlu sekali, lalu model akan tersimpan di perangkat.',
       progress: 0,
     );
 
@@ -154,16 +233,98 @@ class GemmaService extends ChangeNotifier {
       await _installConfiguredNetworkModel();
       _setState(
         GemmaServiceState.initializing,
-        'Mengaktifkan model $modelVariantLabel yang baru diunduh...',
+        'Mengaktifkan ${_selectedVariant.label} yang baru diunduh...',
         progress: 100,
       );
       await _loadActiveModel();
     } catch (error) {
+      if (CancelToken.isCancel(error)) {
+        _setState(
+          GemmaServiceState.needsDownload,
+          'Download ${_selectedVariant.label} dibatalkan. Anda bisa melanjutkan lagi kapan saja saat sudah siap.',
+          progress: 0,
+        );
+        return;
+      }
+
       _setState(
         GemmaServiceState.error,
-        'Gagal download atau install $modelVariantLabel: $error',
+        'Gagal download atau install ${_selectedVariant.label}: $error',
       );
       await _releaseResources();
+    } finally {
+      _downloadCancelToken = null;
+      _resetDownloadEstimate();
+      _isBusy = false;
+    }
+  }
+
+  Future<void> cancelDownload() async {
+    final cancelToken = _downloadCancelToken;
+    if (!isDownloading || cancelToken == null || cancelToken.isCancelled) {
+      return;
+    }
+
+    _setState(
+      GemmaServiceState.downloading,
+      'Membatalkan download ${_selectedVariant.label}...',
+      progress: _downloadProgress,
+    );
+    cancelToken.cancel('User cancelled model download');
+  }
+
+  Future<bool> isSelectedModelInstalled() async {
+    return isVariantInstalled(_selectedVariant);
+  }
+
+  Future<bool> isVariantInstalled(SigapModelVariant variant) async {
+    await _ensurePluginInitialized();
+    if (hasConfiguredLocalPath) {
+      return File(configuredModelPath.trim()).existsSync();
+    }
+
+    final manager = FlutterGemmaPlugin.instance.modelManager;
+    return manager.isModelInstalled(_buildModelSpec(variant));
+  }
+
+  Future<void> deleteSelectedModel() async {
+    if (_isBusy) {
+      return;
+    }
+
+    await _ensurePluginInitialized();
+
+    if (hasConfiguredLocalPath) {
+      _setState(
+        GemmaServiceState.error,
+        'Model file lokal dikelola di luar aplikasi. Hapus file tersebut langsung dari penyimpanan perangkat.',
+      );
+      return;
+    }
+
+    _isBusy = true;
+    _setState(
+      GemmaServiceState.deleting,
+      'Menghapus ${_selectedVariant.label} dari perangkat...',
+      progress: 0,
+    );
+
+    try {
+      await _releaseResources();
+      await FlutterGemmaPlugin.instance.modelManager.deleteModel(
+        _buildSelectedModelSpec(),
+      );
+      _activeBackend = null;
+      _setState(
+        GemmaServiceState.needsDownload,
+        '${_selectedVariant.label} telah dihapus. Unduh lagi bila ingin memakai model ini secara offline.',
+        progress: 0,
+      );
+    } catch (error) {
+      _setState(
+        GemmaServiceState.error,
+        'Gagal menghapus ${_selectedVariant.label}: $error',
+      );
     } finally {
       _isBusy = false;
     }
@@ -187,7 +348,7 @@ class GemmaService extends ChangeNotifier {
     } catch (error) {
       _setState(
         GemmaServiceState.error,
-        'Gagal menghasilkan respons Gemma: $error',
+        'Gagal menghasilkan respons ${_selectedVariant.label}: $error',
       );
       yield _statusMessage;
     }
@@ -203,12 +364,12 @@ class GemmaService extends ChangeNotifier {
 
   Future<void> reset() async {
     await _releaseResources();
+    _activeBackend = null;
     _setState(
       GemmaServiceState.idle,
       'Model Gemma belum diinisialisasi.',
       progress: 0,
     );
-    _activeBackend = null;
   }
 
   Future<void> _ensurePluginInitialized() async {
@@ -238,7 +399,7 @@ class GemmaService extends ChangeNotifier {
     if (!file.existsSync()) {
       _setState(
         GemmaServiceState.missingModelFile,
-        'File model lokal tidak ditemukan di $configuredPath. Pastikan file $modelVariantLabel .litertlm sudah tersedia di storage Android/device, bukan hanya di host Windows.',
+        'File model lokal tidak ditemukan di $configuredPath. Pastikan file .litertlm sudah tersedia di storage Android/device, bukan hanya di host Windows.',
         progress: 0,
       );
       return;
@@ -246,7 +407,7 @@ class GemmaService extends ChangeNotifier {
 
     _setState(
       GemmaServiceState.initializing,
-      'Memasang model lokal $modelVariantLabel...',
+      'Memasang model lokal dari file device...',
     );
     await FlutterGemma.installModel(
       modelType: ModelType.gemmaIt,
@@ -254,7 +415,7 @@ class GemmaService extends ChangeNotifier {
     ).fromFile(configuredPath).install();
     _setState(
       GemmaServiceState.initializing,
-      'Memasang model lokal $modelVariantLabel...',
+      'Memasang model lokal dari file device...',
       progress: 100,
     );
   }
@@ -262,14 +423,14 @@ class GemmaService extends ChangeNotifier {
   Future<void> _loadActiveModel() async {
     _setState(
       GemmaServiceState.initializing,
-      'Menyiapkan sesi $modelVariantLabel...',
+      'Menyiapkan sesi ${_selectedVariant.label}...',
     );
     await _createModel();
     _setState(
       GemmaServiceState.ready,
       _activeBackend == PreferredBackend.gpu
-          ? '$modelVariantLabel siap dipakai offline dengan backend GPU.'
-          : '$modelVariantLabel siap dipakai offline dengan backend CPU.',
+          ? '${_selectedVariant.label} siap dipakai offline dengan backend GPU.'
+          : '${_selectedVariant.label} siap dipakai offline dengan backend CPU.',
     );
   }
 
@@ -278,6 +439,7 @@ class GemmaService extends ChangeNotifier {
   }) async {
     final trimmedUrl = effectiveModelUrl;
     final trimmedToken = configuredModelAuthToken.trim();
+    final cancelToken = _downloadCancelToken;
     final builder = FlutterGemma.installModel(
       modelType: ModelType.gemmaIt,
       fileType: _detectFileType(trimmedUrl),
@@ -286,32 +448,47 @@ class GemmaService extends ChangeNotifier {
       token: trimmedToken.isEmpty ? null : trimmedToken,
     );
 
+    if (cancelToken != null) {
+      builder.withCancelToken(cancelToken);
+    }
+
     if (!skipProgressUpdate) {
       builder.withProgress((progress) {
+        _updateDownloadEstimate(progress);
         _setState(
           GemmaServiceState.downloading,
-          'Mengunduh $modelVariantLabel... $progress% selesai. Setelah ini model akan tersimpan untuk pemakaian offline.',
+          'Mengunduh ${_selectedVariant.label}... $progress% selesai. Setelah ini model akan tersimpan untuk pemakaian offline.',
           progress: progress,
         );
       });
     }
 
     await builder.install();
+    _downloadEta = Duration.zero;
     _setState(
       GemmaServiceState.downloading,
-      'Mengunduh $modelVariantLabel... 100% selesai. Setelah ini model akan tersimpan untuk pemakaian offline.',
+      'Mengunduh ${_selectedVariant.label}... 100% selesai. Setelah ini model akan tersimpan untuk pemakaian offline.',
       progress: 100,
     );
   }
 
-  Future<bool> _isConfiguredNetworkModelInstalled() async {
-    final modelUrl = effectiveModelUrl;
-    if (modelUrl.isEmpty) {
-      return false;
-    }
+  Future<bool> _isSelectedNetworkModelInstalled() async {
+    return isSelectedModelInstalled();
+  }
 
-    final modelId = Uri.parse(modelUrl).pathSegments.last;
-    return FlutterGemma.isModelInstalled(modelId);
+  InferenceModelSpec _buildSelectedModelSpec() {
+    return _buildModelSpec(_selectedVariant);
+  }
+
+  InferenceModelSpec _buildModelSpec(SigapModelVariant variant) {
+    final modelUrl = configuredModelUrl.trim().isNotEmpty
+        ? configuredModelUrl.trim()
+        : variant.defaultUrl;
+    final modelName = Uri.parse(modelUrl).pathSegments.last.split('.').first;
+    return MobileModelManager.createInferenceSpec(
+      name: modelName,
+      modelUrl: modelUrl,
+    );
   }
 
   Future<void> _createModel() async {
@@ -394,11 +571,49 @@ class GemmaService extends ChangeNotifier {
     _state = newState;
     _statusMessage = newStatus;
     if (progress != null) {
-      _downloadProgress = progress.clamp(0, 100);
+      _downloadProgress = progress.clamp(0, 100).toInt();
     }
 
     if (didChange) {
       notifyListeners();
     }
+  }
+
+  void _updateDownloadEstimate(int progress) {
+    final now = DateTime.now();
+    if (_lastProgressAt == null || _lastProgressValue == null) {
+      _lastProgressAt = now;
+      _lastProgressValue = progress;
+      return;
+    }
+
+    final seconds = now.difference(_lastProgressAt!).inMilliseconds / 1000;
+    final progressDelta = progress - _lastProgressValue!;
+    if (seconds <= 0 || progressDelta <= 0) {
+      return;
+    }
+
+    final instantaneousRate = progressDelta / seconds;
+    _smoothedProgressPerSecond = _smoothedProgressPerSecond == null
+        ? instantaneousRate
+        : (_smoothedProgressPerSecond! * 0.7) + (instantaneousRate * 0.3);
+
+    if (_smoothedProgressPerSecond != null && _smoothedProgressPerSecond! > 0) {
+      final remainingProgress = 100 - progress;
+      final remainingSeconds = remainingProgress / _smoothedProgressPerSecond!;
+      if (remainingSeconds.isFinite && remainingSeconds > 0) {
+        _downloadEta = Duration(seconds: remainingSeconds.round());
+      }
+    }
+
+    _lastProgressAt = now;
+    _lastProgressValue = progress;
+  }
+
+  void _resetDownloadEstimate() {
+    _downloadEta = null;
+    _lastProgressAt = null;
+    _lastProgressValue = null;
+    _smoothedProgressPerSecond = null;
   }
 }
