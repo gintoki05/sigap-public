@@ -1841,6 +1841,8 @@ class _GuidanceCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           _WarningBox(color: urgencyColor, warning: guidance.warning),
+          const SizedBox(height: 8),
+          const _MedicalDisclaimerBox(),
           const SizedBox(height: 12),
           const Text(
             'Langkah yang disarankan',
@@ -1918,6 +1920,45 @@ class _WarningBox extends StatelessWidget {
                 fontSize: 12,
                 height: 1.4,
                 color: AppColors.textDark,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MedicalDisclaimerBox extends StatelessWidget {
+  const _MedicalDisclaimerBox();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.navy.withValues(alpha: 0.08)),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.info_outline_rounded,
+            color: AppColors.navy,
+            size: 18,
+          ),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Panduan AI ini bisa keliru, terutama dari foto atau informasi yang terbatas. Jika luka tampak berat, dalam, kotor, terus berdarah, atau kondisi memburuk, segera periksa ke dokter atau fasilitas kesehatan.',
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.4,
+                color: AppColors.textGrey,
                 fontWeight: FontWeight.w600,
               ),
             ),
