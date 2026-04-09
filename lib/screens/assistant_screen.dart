@@ -171,11 +171,14 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                   emergencyContactPhone: viewModel.emergencyContactPhone,
                   onEditEmergencyContact: () =>
                       _showEmergencyContactDialog(context, viewModel),
-                  pendingPhoto: _pendingPhoto,
-                  onRemovePhoto: _clearPendingPhoto,
-                  onApplyPhotoPrompt: _applyPhotoPrompt,
-                ),
+                pendingPhoto: _pendingPhoto,
+                onRemovePhoto: _clearPendingPhoto,
+                onApplyPhotoPrompt: _applyPhotoPrompt,
+                isVisionBetaEnabled: viewModel.isVisionBetaEnabled,
+                visionState: viewModel.visionState,
+                onToggleVisionBeta: viewModel.setVisionBetaEnabled,
               ),
+            ),
             ),
         ],
       ),
@@ -2044,6 +2047,9 @@ class _BottomInputBar extends StatelessWidget {
   final AssistantPhotoAttachment? pendingPhoto;
   final VoidCallback onRemovePhoto;
   final ValueChanged<String> onApplyPhotoPrompt;
+  final bool isVisionBetaEnabled;
+  final AssistantVisionState visionState;
+  final Future<void> Function(bool value) onToggleVisionBeta;
 
   const _BottomInputBar({
     required this.controller,
@@ -2058,6 +2064,9 @@ class _BottomInputBar extends StatelessWidget {
     required this.pendingPhoto,
     required this.onRemovePhoto,
     required this.onApplyPhotoPrompt,
+    required this.isVisionBetaEnabled,
+    required this.visionState,
+    required this.onToggleVisionBeta,
   });
 
   @override
@@ -2073,6 +2082,76 @@ class _BottomInputBar extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: AppColors.navy.withValues(alpha: 0.08),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  isVisionBetaEnabled
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                  size: 18,
+                  color: AppColors.navy,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Analisis Foto Beta',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.navy,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        switch (visionState) {
+                          AssistantVisionState.disabled =>
+                            'Nonaktif. Foto dibantu lewat deskripsi.',
+                          AssistantVisionState.enabled =>
+                            'Aktif. SIGAP mencoba membaca foto.',
+                          AssistantVisionState.tryingVision =>
+                            'SIGAP sedang membaca foto...',
+                          AssistantVisionState.visionFailedFallback =>
+                            'Foto belum bisa dibaca. Pakai deskripsi teks.',
+                        },
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textGrey,
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Transform.scale(
+                  scale: 0.85,
+                  child: Switch(
+                    value: isVisionBetaEnabled,
+                    onChanged: (value) {
+                      onToggleVisionBeta(value);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
           if (pendingPhoto != null) ...[
             Container(
               width: double.infinity,
@@ -2246,18 +2325,20 @@ class _BottomInputBar extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Row(
+                  Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(
+                      const Icon(
                         Icons.medical_information_outlined,
                         size: 18,
                         color: AppColors.navy,
                       ),
-                      SizedBox(width: 8),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Tambahkan deskripsi singkat. SIGAP masih memakai teks Anda, bukan analisis visual otomatis.',
+                          isVisionBetaEnabled
+                              ? 'SIGAP akan mencoba membaca foto luka ini dalam mode beta. Tetap tambahkan deskripsi singkat agar hasil lebih aman jika visual kurang jelas atau perlu fallback.'
+                              : 'Tambahkan deskripsi singkat. SIGAP masih memakai teks Anda, bukan analisis visual otomatis.',
                           style: TextStyle(
                             fontSize: 12,
                             color: AppColors.textGrey,
@@ -2321,7 +2402,9 @@ class _BottomInputBar extends StatelessWidget {
                   maxLines: 4,
                   decoration: InputDecoration(
                     hintText: pendingPhoto != null
-                        ? 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm, korban sadar.'
+                        ? isVisionBetaEnabled
+                            ? 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm. Tolong cek apakah tampak perlu tindakan cepat.'
+                            : 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm, korban sadar.'
                         : 'Ketik kondisi darurat...',
                     hintStyle: const TextStyle(color: AppColors.textGrey),
                     filled: true,

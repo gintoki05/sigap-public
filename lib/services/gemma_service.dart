@@ -24,6 +24,21 @@ enum GemmaServiceState {
 
 enum SigapModelVariant { e2b, e4b }
 
+class GemmaVisionException implements Exception {
+  const GemmaVisionException({
+    required this.message,
+    required this.retriedWithCpu,
+    this.failedBackend,
+  });
+
+  final String message;
+  final bool retriedWithCpu;
+  final PreferredBackend? failedBackend;
+
+  @override
+  String toString() => message;
+}
+
 extension SigapModelVariantExtension on SigapModelVariant {
   String get label {
     switch (this) {
@@ -111,6 +126,10 @@ class GemmaService extends ChangeNotifier {
   bool _chatSupportsImage = false;
   bool _chatSupportsAudio = false;
   PreferredBackend? _activeBackend;
+  PreferredBackend? _lastInferenceBackend;
+  bool _lastInferenceUsedVision = false;
+  bool _lastVisionRetriedToCpu = false;
+  String _lastInferenceDebugLabel = 'Belum ada inference yang dijalankan.';
   SigapModelVariant _selectedVariant = SigapModelVariant.e2b;
   bool _prefsLoaded = false;
   final Map<SigapModelVariant, String> _importedModelPaths = {};
@@ -134,6 +153,10 @@ class GemmaService extends ChangeNotifier {
       _state == GemmaServiceState.missingModelPath ||
       _state == GemmaServiceState.missingConfiguration;
   PreferredBackend? get activeBackend => _activeBackend;
+  PreferredBackend? get lastInferenceBackend => _lastInferenceBackend;
+  bool get lastInferenceUsedVision => _lastInferenceUsedVision;
+  bool get lastVisionRetriedToCpu => _lastVisionRetriedToCpu;
+  String get lastInferenceDebugLabel => _lastInferenceDebugLabel;
   SigapModelVariant get selectedVariant => _selectedVariant;
   String get selectedModelLabel => _selectedVariant.label;
   String get estimatedModelSizeLabel => _selectedVariant.estimatedSizeLabel;
@@ -471,14 +494,59 @@ class GemmaService extends ChangeNotifier {
     required String prompt,
     required Uint8List imageBytes,
   }) async* {
-    yield* _generateResponseForMessage(
-      Message.withImage(
-        text: prompt,
-        imageBytes: imageBytes,
-        isUser: true,
-      ),
-      supportImage: true,
+    if (!isReady) {
+      throw GemmaVisionException(
+        message: _statusMessage,
+        retriedWithCpu: false,
+        failedBackend: _activeBackend,
+      );
+    }
+
+    final imageMessage = Message.withImage(
+      text: prompt,
+      imageBytes: imageBytes,
+      isUser: true,
     );
+
+    _lastInferenceUsedVision = true;
+    _lastVisionRetriedToCpu = false;
+
+    try {
+      final tokens = await _runImageInferenceAttempt(
+        imageMessage,
+        preferredBackend: PreferredBackend.gpu,
+      );
+      yield* Stream<String>.fromIterable(tokens);
+      return;
+    } catch (gpuError) {
+      _lastVisionRetriedToCpu = true;
+      _setState(
+        GemmaServiceState.initializing,
+        'Analisis foto beta gagal di backend GPU. Mencoba ulang dengan backend CPU...',
+      );
+      try {
+        final tokens = await _runImageInferenceAttempt(
+          imageMessage,
+          preferredBackend: PreferredBackend.cpu,
+        );
+        yield* Stream<String>.fromIterable(tokens);
+        return;
+      } catch (cpuError) {
+        final message =
+            'Analisis foto beta gagal di GPU dan CPU: GPU=$gpuError | CPU=$cpuError';
+        _setState(
+          GemmaServiceState.error,
+          'Analisis foto beta gagal di semua backend. SIGAP perlu kembali ke deskripsi teks.',
+        );
+        _lastInferenceDebugLabel =
+            'Vision beta gagal. Retry CPU sudah dicoba tetapi belum berhasil.';
+        throw GemmaVisionException(
+          message: message,
+          retriedWithCpu: true,
+          failedBackend: PreferredBackend.cpu,
+        );
+      }
+    }
   }
 
   Stream<String> _generateResponseForMessage(
@@ -496,6 +564,11 @@ class GemmaService extends ChangeNotifier {
         supportImage: supportImage,
         supportAudio: supportAudio,
       );
+      _lastInferenceBackend = _activeBackend;
+      _lastInferenceUsedVision = supportImage;
+      if (!supportImage) {
+        _lastVisionRetriedToCpu = false;
+      }
       await chat.addQueryChunk(message);
 
       await for (final response in chat.generateChatResponseAsync()) {
@@ -503,11 +576,16 @@ class GemmaService extends ChangeNotifier {
           yield response.token;
         }
       }
+      _lastInferenceDebugLabel = supportImage
+          ? 'Analisis foto beta berhasil dengan backend ${_backendLabel(_activeBackend)}${_lastVisionRetriedToCpu ? ' setelah retry CPU.' : '.'}'
+          : 'Respons teks berhasil dengan backend ${_backendLabel(_activeBackend)}.';
     } catch (error) {
       _setState(
         GemmaServiceState.error,
         'Gagal menghasilkan respons ${_selectedVariant.label}: $error',
       );
+      _lastInferenceDebugLabel =
+          'Inference gagal pada backend ${_backendLabel(_activeBackend)}.';
       yield _statusMessage;
     }
   }
@@ -741,6 +819,7 @@ class GemmaService extends ChangeNotifier {
   Future<void> _createConfiguredModel({
     bool supportImage = false,
     bool supportAudio = false,
+    PreferredBackend? preferredBackend,
   }) async {
     await _chat?.close();
     _chat = null;
@@ -751,24 +830,29 @@ class GemmaService extends ChangeNotifier {
     await _model?.close();
     _model = null;
 
-    try {
-      _model = await FlutterGemma.getActiveModel(
-        maxTokens: 2048,
-        preferredBackend: PreferredBackend.gpu,
+    if (preferredBackend != null) {
+      _model = await _createActiveModelForBackend(
+        preferredBackend,
         supportImage: supportImage,
         supportAudio: supportAudio,
-        maxNumImages: supportImage ? 1 : null,
       );
-      _activeBackend = PreferredBackend.gpu;
-    } catch (_) {
-      _model = await FlutterGemma.getActiveModel(
-        maxTokens: 2048,
-        preferredBackend: PreferredBackend.cpu,
-        supportImage: supportImage,
-        supportAudio: supportAudio,
-        maxNumImages: supportImage ? 1 : null,
-      );
-      _activeBackend = PreferredBackend.cpu;
+      _activeBackend = preferredBackend;
+    } else {
+      try {
+        _model = await _createActiveModelForBackend(
+          PreferredBackend.gpu,
+          supportImage: supportImage,
+          supportAudio: supportAudio,
+        );
+        _activeBackend = PreferredBackend.gpu;
+      } catch (_) {
+        _model = await _createActiveModelForBackend(
+          PreferredBackend.cpu,
+          supportImage: supportImage,
+          supportAudio: supportAudio,
+        );
+        _activeBackend = PreferredBackend.cpu;
+      }
     }
 
     _modelSupportsImage = supportImage;
@@ -778,15 +862,18 @@ class GemmaService extends ChangeNotifier {
   Future<InferenceChat> _ensureChat({
     bool supportImage = false,
     bool supportAudio = false,
+    PreferredBackend? preferredBackend,
   }) async {
     final needsModelReconfiguration =
         _model == null ||
+        (preferredBackend != null && _activeBackend != preferredBackend) ||
         (supportImage && !_modelSupportsImage) ||
         (supportAudio && !_modelSupportsAudio);
     if (needsModelReconfiguration) {
       await _createConfiguredModel(
         supportImage: supportImage,
         supportAudio: supportAudio,
+        preferredBackend: preferredBackend,
       );
     }
 
@@ -835,6 +922,52 @@ class GemmaService extends ChangeNotifier {
       await _model!.close();
       _model = null;
     }
+  }
+
+  Future<List<String>> _runImageInferenceAttempt(
+    Message message, {
+    required PreferredBackend preferredBackend,
+  }) async {
+    await _releaseResources();
+    final chat = await _ensureChat(
+      supportImage: true,
+      preferredBackend: preferredBackend,
+    );
+    _lastInferenceBackend = _activeBackend;
+
+    final tokens = <String>[];
+    await chat.addQueryChunk(message);
+    await for (final response in chat.generateChatResponseAsync()) {
+      if (response is TextResponse) {
+        tokens.add(response.token);
+      }
+    }
+
+    _lastInferenceDebugLabel =
+        'Analisis foto beta berhasil dengan backend ${_backendLabel(_activeBackend)}${_lastVisionRetriedToCpu ? ' setelah retry CPU.' : '.'}';
+    _setState(
+      GemmaServiceState.ready,
+      'Analisis foto beta siap dipakai dengan backend ${_backendLabel(_activeBackend)}.',
+    );
+    return tokens;
+  }
+
+  Future<InferenceModel> _createActiveModelForBackend(
+    PreferredBackend backend, {
+    required bool supportImage,
+    required bool supportAudio,
+  }) {
+    return FlutterGemma.getActiveModel(
+      maxTokens: 2048,
+      preferredBackend: backend,
+      supportImage: supportImage,
+      supportAudio: supportAudio,
+      maxNumImages: supportImage ? 1 : null,
+    );
+  }
+
+  String _backendLabel(PreferredBackend? backend) {
+    return backend == PreferredBackend.gpu ? 'GPU' : 'CPU';
   }
 
   ModelFileType _detectFileType(String filePath) {

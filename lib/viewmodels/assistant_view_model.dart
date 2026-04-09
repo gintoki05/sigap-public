@@ -87,6 +87,13 @@ class AssistantPhotoAttachment {
   final Uint8List bytes;
 }
 
+enum AssistantVisionState {
+  disabled,
+  enabled,
+  tryingVision,
+  visionFailedFallback,
+}
+
 class AssistantGuidanceRequest {
   const AssistantGuidanceRequest({
     required this.userMessage,
@@ -125,7 +132,7 @@ class AssistantViewModel extends ChangeNotifier {
   static const String _emergencyContactNameKey = 'sigap.emergency_contact_name';
   static const String _emergencyContactPhoneKey =
       'sigap.emergency_contact_phone';
-  static const bool _enableNativeVisionInference = false;
+  static const String _visionBetaEnabledKey = 'sigap.vision_beta_enabled';
 
   AssistantViewModel({
     required String inputMode,
@@ -160,6 +167,8 @@ class AssistantViewModel extends ChangeNotifier {
   bool _isImportingLocalModel = false;
   bool _isSendingMessage = false;
   bool _isSendingEmergency = false;
+  bool _isVisionBetaEnabled = false;
+  AssistantVisionState _visionState = AssistantVisionState.disabled;
   AssistantGuidanceRequest? _lastGuidanceRequest;
   int? _lastAssistantResponseIndex;
   final Map<SigapModelVariant, bool> _installedVariants = {};
@@ -177,6 +186,23 @@ class AssistantViewModel extends ChangeNotifier {
   String? get emergencyContactPhone => _emergencyContactPhone;
   Map<SigapModelVariant, bool> get installedVariants =>
       Map.unmodifiable(_installedVariants);
+  bool get isVisionBetaEnabled => _isVisionBetaEnabled;
+  AssistantVisionState get visionState => _visionState;
+  bool get isTryingVision => _visionState == AssistantVisionState.tryingVision;
+  String get visionStatusSummary {
+    switch (_visionState) {
+      case AssistantVisionState.disabled:
+        return 'Analisis Foto Beta dimatikan. SIGAP hanya memakai deskripsi teks saat ada lampiran foto.';
+      case AssistantVisionState.enabled:
+        return _gemmaService.lastInferenceUsedVision
+            ? _gemmaService.lastInferenceDebugLabel
+            : 'Analisis Foto Beta aktif. SIGAP akan mencoba membaca foto luka, tetapi tetap membutuhkan deskripsi singkat untuk hasil yang lebih aman.';
+      case AssistantVisionState.tryingVision:
+        return 'SIGAP sedang mencoba Analisis Foto Beta. Jika jalur visual gagal, aplikasi akan kembali ke deskripsi teks.';
+      case AssistantVisionState.visionFailedFallback:
+        return 'Analisis Foto Beta gagal di perangkat ini. SIGAP kembali memakai deskripsi teks untuk menjaga stabilitas.';
+    }
+  }
 
   bool get isModelReady => _gemmaService.isReady;
   bool get isDownloading => _gemmaService.isDownloading;
@@ -211,6 +237,7 @@ class AssistantViewModel extends ChangeNotifier {
         _connectivity.onConnectivityChanged.listen(_updateConnectivityState);
     await _refreshConnectivityState();
     await _loadEmergencyContact();
+    await _loadVisionBetaPreference();
     await _ragService.initialize();
     await _initializeTts();
     await initializeReadyModel();
@@ -255,6 +282,19 @@ class AssistantViewModel extends ChangeNotifier {
     await prefs.setString(_emergencyContactPhoneKey, sanitizedPhone);
     _emergencyContactName = sanitizedName;
     _emergencyContactPhone = sanitizedPhone;
+    _notifySafely();
+  }
+
+  Future<void> setVisionBetaEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_visionBetaEnabledKey, value);
+    _isVisionBetaEnabled = value;
+    _visionState = value
+        ? AssistantVisionState.enabled
+        : AssistantVisionState.disabled;
+    _serviceStatus = value
+        ? 'Analisis Foto Beta aktif. SIGAP akan mencoba membaca foto luka, lalu fallback ke teks jika inference visual gagal.'
+        : 'Analisis Foto Beta dimatikan. SIGAP hanya memakai deskripsi teks saat foto dilampirkan.';
     _notifySafely();
   }
 
@@ -403,9 +443,10 @@ class AssistantViewModel extends ChangeNotifier {
   }) async {
     final trimmedDraft = text.trim();
 
-    if (!_enableNativeVisionInference) {
+    if (!_isVisionBetaEnabled) {
+      _visionState = AssistantVisionState.disabled;
       _serviceStatus =
-          'Foto diterima sebagai lampiran, tetapi analisis visual otomatis sedang dimatikan di perangkat ini untuk mencegah crash native.';
+          'Foto diterima sebagai lampiran, tetapi Analisis Foto Beta sedang dimatikan. SIGAP akan memakai deskripsi teks untuk menjaga stabilitas.';
 
       if (trimmedDraft.isEmpty) {
         _messages.add(
@@ -420,7 +461,7 @@ class AssistantViewModel extends ChangeNotifier {
           const AssistantMessage(
             role: 'assistant',
             text:
-                'Analisis foto otomatis sedang dimatikan di perangkat ini untuk menjaga stabilitas. Tambahkan deskripsi singkat tentang apa yang terlihat pada foto, lalu kirim lagi agar SIGAP bisa memberi panduan yang lebih tepat.',
+                'Analisis Foto Beta sedang dimatikan di perangkat ini. Tambahkan deskripsi singkat tentang lokasi luka, perdarahan, ukuran, atau kondisi korban, lalu kirim lagi agar SIGAP bisa memberi panduan yang lebih tepat.',
           ),
         );
         _notifySafely();
@@ -438,18 +479,23 @@ class AssistantViewModel extends ChangeNotifier {
       return;
     }
 
+    _visionState = AssistantVisionState.tryingVision;
+    _serviceStatus =
+        'Analisis Foto Beta sedang dicoba. SIGAP akan mencoba membaca foto luka dan otomatis fallback ke deskripsi teks jika inference visual gagal.';
+    _notifySafely();
+
     final userMessage = trimmedDraft.isEmpty
-        ? 'Saya mengirim foto kondisi untuk dianalisis.'
-        : 'Saya mengirim foto kondisi. Catatan: $trimmedDraft';
+        ? 'Saya mengirim foto luka/kondisi untuk dianalisis.'
+        : 'Saya mengirim foto luka/kondisi. Catatan: $trimmedDraft';
     final fallbackInput = trimmedDraft.isEmpty
-        ? 'Foto kondisi darurat dari kamera pengguna.'
+        ? 'User melampirkan foto luka atau kondisi P3K dari kamera tanpa deskripsi teks tambahan.'
         : trimmedDraft;
 
     await _sendGuidanceRequest(
       userMessage: userMessage,
       fallbackInput: fallbackInput,
       ragQuery: trimmedDraft.isEmpty
-          ? 'analisis foto kondisi darurat'
+          ? 'analisis foto luka pertolongan pertama'
           : trimmedDraft,
       includePhotoContext: true,
       userPhotoBytes: imageBytes,
@@ -573,6 +619,9 @@ class AssistantViewModel extends ChangeNotifier {
         );
         _notifySafely();
       }
+      if (request.usesImageInference) {
+        _visionState = AssistantVisionState.enabled;
+      }
       final guidance = _buildStructuredGuidance(
         rawText: buffer.toString(),
         fallbackInput: request.fallbackInput,
@@ -586,6 +635,14 @@ class AssistantViewModel extends ChangeNotifier {
       _serviceStatus = _gemmaService.statusMessage;
       await _handleGuidanceSpeech(guidance);
     } catch (error) {
+      if (request.usesImageInference) {
+        await _fallbackToTextAfterVisionFailure(
+          request,
+          assistantMessageIndex: assistantMessageIndex,
+          error: error,
+        );
+        return;
+      }
       final message = 'Terjadi kesalahan saat memproses pesan: $error';
       _replaceAssistantMessageAt(assistantMessageIndex, message);
       _serviceStatus = message;
@@ -753,17 +810,19 @@ class AssistantViewModel extends ChangeNotifier {
         : '- Tidak ada konteks RAG tambahan yang terverifikasi di perangkat saat ini.';
     final modalityBlock = includePhotoContext
         ? '''
-Ada satu foto kondisi dari kamera user.
-- Gunakan foto hanya untuk membantu mengamati kondisi yang tampak.
-- Jika detail visual tidak jelas, katakan keterbatasannya dengan jujur.
-- Jangan mengarang luka, warna, perdarahan, atau benda asing bila tidak terlihat jelas.
+Ada satu foto luka atau kondisi P3K dari kamera user.
+- Fokuskan observasi visual pada triase luka atau kondisi pertolongan pertama, bukan deskripsi umum foto.
+- Gunakan bahasa konservatif seperti "dari foto tampak kemungkinan..." atau "bagian ini terlihat..." bila visual tidak sepenuhnya jelas.
+- Jangan mengarang luka, warna, perdarahan, lepuh, kedalaman luka, atau benda asing bila tidak terlihat jelas.
+- Jika foto kurang jelas, akui keterbatasannya dengan jujur lalu minta konfirmasi detail penting.
+- Wajib minta klarifikasi bila lokasi luka, perdarahan, luas luka, lepuh, benda menancap, atau kesadaran korban belum jelas.
 '''
         : hasPhotoAttachmentWithoutVision
         ? '''
-User melampirkan foto kondisi, tetapi analisis visual native sedang dimatikan demi stabilitas runtime perangkat.
+User melampirkan foto luka atau kondisi P3K, tetapi analisis visual native sedang dimatikan atau gagal demi stabilitas runtime perangkat.
 - Jangan mengklaim bisa melihat atau menganalisis foto.
 - Gunakan hanya deskripsi teks user.
-- Jika informasi visual masih kurang, minta user menjelaskan apa yang terlihat pada foto.
+- Jika informasi visual masih kurang, minta user menjelaskan lokasi luka, perdarahan, ukuran, lepuh, benda menancap, dan kesadaran korban.
 '''
         : 'Tidak ada foto terlampir pada permintaan ini.';
 
@@ -1052,6 +1111,71 @@ Laporan user: $userInput
     final prefs = await SharedPreferences.getInstance();
     _emergencyContactName = prefs.getString(_emergencyContactNameKey)?.trim();
     _emergencyContactPhone = prefs.getString(_emergencyContactPhoneKey)?.trim();
+  }
+
+  Future<void> _loadVisionBetaPreference() async {
+    final prefs = await SharedPreferences.getInstance();
+    _isVisionBetaEnabled = prefs.getBool(_visionBetaEnabledKey) ?? false;
+    _visionState = _isVisionBetaEnabled
+        ? AssistantVisionState.enabled
+        : AssistantVisionState.disabled;
+  }
+
+  Future<void> _fallbackToTextAfterVisionFailure(
+    AssistantGuidanceRequest request, {
+    required int assistantMessageIndex,
+    required Object error,
+  }) async {
+    _visionState = AssistantVisionState.visionFailedFallback;
+    final fallbackRequest = AssistantGuidanceRequest(
+      userMessage: request.userMessage,
+      fallbackInput: request.fallbackInput,
+      ragQuery: request.ragQuery,
+      hasPhotoAttachmentWithoutVision: true,
+      userPhotoBytes: request.userPhotoBytes,
+      userPhotoName: request.userPhotoName,
+    );
+    _lastGuidanceRequest = fallbackRequest;
+    _serviceStatus =
+        'Analisis Foto Beta gagal: $error. SIGAP kembali memakai deskripsi teks untuk menjaga stabilitas.';
+    _replaceAssistantMessageAt(
+      assistantMessageIndex,
+      'Analisis Foto Beta gagal di perangkat ini. SIGAP kembali memakai deskripsi teks untuk menyusun panduan yang lebih aman.',
+    );
+    _notifySafely();
+
+    final ragContext = await _ragService.query(fallbackRequest.ragQuery, limit: 3);
+    final fallbackPrompt = _buildActiveGuidancePrompt(
+      userInput: fallbackRequest.fallbackInput,
+      ragContext: ragContext,
+      includePhotoContext: false,
+      hasPhotoAttachmentWithoutVision: true,
+    );
+    final buffer = StringBuffer();
+    await for (final token in _streamResponseForRequest(
+      fallbackRequest,
+      fallbackPrompt,
+    )) {
+      buffer.write(token);
+      _replaceAssistantMessageAt(
+        assistantMessageIndex,
+        _cleanDisplayText(buffer.toString()),
+      );
+      _notifySafely();
+    }
+    final guidance = _buildStructuredGuidance(
+      rawText: buffer.toString(),
+      fallbackInput: fallbackRequest.fallbackInput,
+    );
+    _urgency = guidance.urgency;
+    _replaceAssistantMessageAt(
+      assistantMessageIndex,
+      guidance.summary,
+      guidance: guidance,
+    );
+    _serviceStatus =
+        'Analisis Foto Beta gagal lalu fallback ke teks. ${_gemmaService.lastInferenceDebugLabel}';
+    await _handleGuidanceSpeech(guidance);
   }
 
   Future<Position> _determineCurrentPosition() async {
