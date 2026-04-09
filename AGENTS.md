@@ -185,8 +185,17 @@ Sebelum menyatakan task selesai, agent harus mengecek:
 - apakah kode benar-benar diubah jika task meminta implementasi
 - apakah perubahan selaras dengan issue yang sedang dikerjakan
 - apakah ada TODO/stub kritis yang masih membuat fitur belum usable
-- apakah test/analyze/build sudah dijalankan jika memungkinkan
+- apakah test/analyze/build perlu dijalankan atau cukup diserahkan ke user untuk verifikasi manual
 - apakah perlu mengusulkan update status di Linear
+
+## 11A. Aturan Verifikasi Manual Oleh User
+
+Untuk repo SIGAP ini, default verifikasi runtime tetap di tangan user kecuali user meminta eksplisit.
+
+- agent tidak boleh otomatis menjalankan `flutter analyze`, `flutter test`, `flutter run`, atau proses build hanya karena selesai mengedit kode
+- agent boleh mengusulkan command verifikasi yang relevan, tetapi eksekusinya menunggu instruksi user
+- jika agent butuh memastikan API atau struktur kode, utamakan pembacaan kode, dokumentasi resmi, dan reasoning statis sebelum menjalankan command verifikasi
+- jika verifikasi belum dijalankan, agent harus menyatakannya secara eksplisit sebagai "belum diverifikasi manual oleh user"
 
 ## 12. Default Behavior Untuk Repo Ini
 

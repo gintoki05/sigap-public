@@ -100,9 +100,13 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                       : ListView.builder(
                           padding: const EdgeInsets.all(16),
                           itemCount: viewModel.messages.length,
-                          itemBuilder: (context, index) => _MessageBubble(
-                            message: viewModel.messages[index],
-                          ),
+                          itemBuilder: (context, index) {
+                            final message = viewModel.messages[index];
+                            if (message.hasStructuredGuidance) {
+                              return _GuidanceCard(message: message);
+                            }
+                            return _MessageBubble(message: message);
+                          },
                         ))
                 : _ModelSetupPanel(
                     service: viewModel.gemmaService,
@@ -119,25 +123,6 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                     onRetry: viewModel.initializeReadyModel,
                   ),
           ),
-          if (viewModel.isModelReady && viewModel.isBusy)
-            const Padding(
-              padding: EdgeInsets.all(8),
-              child: Row(
-                children: [
-                  SizedBox(width: 16),
-                  SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  SizedBox(width: 8),
-                  Text(
-                    'SIGAP sedang berpikir...',
-                    style: TextStyle(color: AppColors.textGrey),
-                  ),
-                ],
-              ),
-            ),
           if (viewModel.isModelReady)
             _BottomInputBar(
               controller: _controller,
@@ -1026,24 +1011,49 @@ class _UrgencyBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final helperText = switch (level) {
+      UrgencyLevel.green =>
+        'Fokus pada langkah aman mandiri sambil terus pantau gejala.',
+      UrgencyLevel.yellow =>
+        'Butuh penanganan cepat dan evaluasi medis bila gejala tidak membaik.',
+      UrgencyLevel.red =>
+        'Prioritaskan bantuan darurat dan jangan tunda mencari pertolongan medis.',
+    };
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
       color: level.color.withValues(alpha: 0.15),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(
-              color: level.color,
-              shape: BoxShape.circle,
-            ),
+          Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: level.color,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                level.label,
+                style: TextStyle(
+                  color: level.color,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
+          const SizedBox(height: 4),
           Text(
-            level.label,
-            style: TextStyle(color: level.color, fontWeight: FontWeight.bold),
+            helperText,
+            style: const TextStyle(
+              color: AppColors.textGrey,
+              fontSize: 12,
+            ),
           ),
         ],
       ),
@@ -1163,6 +1173,253 @@ class _MessageBubble extends StatelessWidget {
                   color: message.isUser ? Colors.white : AppColors.textDark,
                 ),
               ),
+      ),
+    );
+  }
+}
+
+class _GuidanceCard extends StatelessWidget {
+  const _GuidanceCard({required this.message});
+
+  final AssistantMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    final guidance = message.guidance!;
+    final urgencyColor = guidance.urgency.color;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: urgencyColor.withValues(alpha: 0.18)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: urgencyColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              guidance.urgency.label,
+              style: TextStyle(
+                color: urgencyColor,
+                fontWeight: FontWeight.w700,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            guidance.summary,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: AppColors.textDark,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _WarningBox(
+            color: urgencyColor,
+            warning: guidance.warning,
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'Langkah yang disarankan',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: AppColors.navy,
+            ),
+          ),
+          const SizedBox(height: 10),
+          for (var i = 0; i < guidance.steps.length; i++) ...[
+            _StepCard(
+              index: i + 1,
+              step: guidance.steps[i],
+            ),
+            if (i != guidance.steps.length - 1) const SizedBox(height: 10),
+          ],
+          if (guidance.followUpQuestions.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Text(
+              'Pertanyaan lanjutan',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: AppColors.navy,
+              ),
+            ),
+            const SizedBox(height: 8),
+            for (final question in guidance.followUpQuestions) ...[
+              _FollowUpQuestion(question: question),
+              const SizedBox(height: 8),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _WarningBox extends StatelessWidget {
+  const _WarningBox({
+    required this.color,
+    required this.warning,
+  });
+
+  final Color color;
+  final String warning;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.warning_amber_rounded, color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              warning,
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.45,
+                color: AppColors.textDark,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StepCard extends StatelessWidget {
+  const _StepCard({
+    required this.index,
+    required this.step,
+  });
+
+  final int index;
+  final AssistantGuidanceStep step;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.background,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.navy.withValues(alpha: 0.08)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            decoration: const BoxDecoration(
+              color: AppColors.navy,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: Text(
+              '$index',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  step.title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  step.details,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textGrey,
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FollowUpQuestion extends StatelessWidget {
+  const _FollowUpQuestion({required this.question});
+
+  final String question;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.navy.withValues(alpha: 0.08)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.help_outline_rounded,
+            color: AppColors.navy,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              question,
+              style: const TextStyle(
+                fontSize: 13,
+                color: AppColors.textDark,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
