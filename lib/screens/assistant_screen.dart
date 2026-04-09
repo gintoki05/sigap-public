@@ -2077,6 +2077,7 @@ class _BottomInputBar extends StatelessWidget {
 
     return SingleChildScrollView(
       child: Container(
+        width: double.infinity,
         color: Colors.white,
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 14),
         child: Column(

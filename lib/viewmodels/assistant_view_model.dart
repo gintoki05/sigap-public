@@ -204,7 +204,8 @@ class AssistantViewModel extends ChangeNotifier {
     }
   }
 
-  bool get isModelReady => _gemmaService.isReady;
+  bool get isModelReady =>
+      _gemmaService.isReady || _gemmaService.hasLoadedModelSuccessfully;
   bool get isDownloading => _gemmaService.isDownloading;
   bool get isDeleting => _gemmaService.isDeleting;
   int get downloadProgress => _gemmaService.downloadProgress;

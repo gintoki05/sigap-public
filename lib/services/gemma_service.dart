@@ -130,6 +130,7 @@ class GemmaService extends ChangeNotifier {
   bool _lastInferenceUsedVision = false;
   bool _lastVisionRetriedToCpu = false;
   String _lastInferenceDebugLabel = 'Belum ada inference yang dijalankan.';
+  bool _hasLoadedModelSuccessfully = false;
   SigapModelVariant _selectedVariant = SigapModelVariant.e2b;
   bool _prefsLoaded = false;
   final Map<SigapModelVariant, String> _importedModelPaths = {};
@@ -141,6 +142,7 @@ class GemmaService extends ChangeNotifier {
   bool get isReady => _state == GemmaServiceState.ready && _model != null;
   bool get isDownloading => _state == GemmaServiceState.downloading;
   bool get isDeleting => _state == GemmaServiceState.deleting;
+  bool get hasLoadedModelSuccessfully => _hasLoadedModelSuccessfully;
   bool get hasConfiguredLocalPath =>
       (effectiveLocalModelPath?.trim().isNotEmpty ?? false);
   bool get hasConfiguredModelUrl => configuredModelUrl.trim().isNotEmpty;
@@ -440,6 +442,7 @@ class GemmaService extends ChangeNotifier {
         _importedModelPaths.remove(_selectedVariant);
         await _removePersistedImportedPath(_selectedVariant);
         _activeBackend = null;
+        _hasLoadedModelSuccessfully = false;
         _setState(
           GemmaServiceState.needsDownload,
           '${_selectedVariant.label} lokal telah dihapus. Anda bisa mengimpor ulang file model atau memakai download online.',
@@ -469,6 +472,7 @@ class GemmaService extends ChangeNotifier {
         _buildSelectedModelSpec(),
       );
       _activeBackend = null;
+      _hasLoadedModelSuccessfully = false;
       _setState(
         GemmaServiceState.needsDownload,
         '${_selectedVariant.label} telah dihapus. Unduh lagi bila ingin memakai model ini secara offline.',
@@ -603,6 +607,7 @@ class GemmaService extends ChangeNotifier {
   Future<void> reset() async {
     await _releaseResources();
     _activeBackend = null;
+    _hasLoadedModelSuccessfully = false;
     _setState(
       GemmaServiceState.idle,
       'Model Gemma belum diinisialisasi.',
@@ -731,6 +736,7 @@ class GemmaService extends ChangeNotifier {
       'Menyiapkan sesi ${_selectedVariant.label}...',
     );
     await _createModel();
+    _hasLoadedModelSuccessfully = true;
     _setState(
       GemmaServiceState.ready,
       _activeBackend == PreferredBackend.gpu
@@ -945,6 +951,7 @@ class GemmaService extends ChangeNotifier {
 
     _lastInferenceDebugLabel =
         'Analisis foto beta berhasil dengan backend ${_backendLabel(_activeBackend)}${_lastVisionRetriedToCpu ? ' setelah retry CPU.' : '.'}';
+    _hasLoadedModelSuccessfully = true;
     _setState(
       GemmaServiceState.ready,
       'Analisis foto beta siap dipakai dengan backend ${_backendLabel(_activeBackend)}.',
