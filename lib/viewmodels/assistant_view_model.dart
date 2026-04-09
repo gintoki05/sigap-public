@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 
 import '../core/constants.dart';
@@ -123,6 +124,42 @@ class AssistantViewModel extends ChangeNotifier {
     await _refreshInstalledVariants();
     _serviceStatus = _gemmaService.statusMessage;
     _notifySafely();
+  }
+
+  Future<void> importLocalModel() async {
+    _notifySafely();
+
+    try {
+      final result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['litertlm', 'task', 'bin', 'tflite'],
+        allowMultiple: false,
+        withData: false,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        _serviceStatus = 'Impor model dibatalkan.';
+        _notifySafely();
+        return;
+      }
+
+      final pickedFile = result.files.single;
+      final sourcePath = pickedFile.path;
+      if (sourcePath == null || sourcePath.trim().isEmpty) {
+        _serviceStatus =
+            'File picker tidak memberikan path file yang bisa dibaca.';
+        _notifySafely();
+        return;
+      }
+
+      await _gemmaService.importSelectedModelFromPath(sourcePath);
+      await _refreshInstalledVariants();
+      _serviceStatus = _gemmaService.statusMessage;
+      _notifySafely();
+    } catch (error) {
+      _serviceStatus = 'Gagal mengimpor model lokal: $error';
+      _notifySafely();
+    }
   }
 
   Future<bool> isSelectedModelInstalled() {

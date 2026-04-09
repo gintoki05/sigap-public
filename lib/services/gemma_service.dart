@@ -3,6 +3,9 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_gemma/mobile/flutter_gemma_mobile.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 enum GemmaServiceState {
   idle,
@@ -76,6 +79,8 @@ class GemmaService extends ChangeNotifier {
   static const String modelPathEnvKey = 'SIGAP_GEMMA_MODEL_PATH';
   static const String modelUrlEnvKey = 'SIGAP_GEMMA_MODEL_URL';
   static const String modelAuthTokenEnvKey = 'SIGAP_GEMMA_MODEL_AUTH_TOKEN';
+  static const String importedModelPathPrefsPrefix =
+      'sigap.imported_model_path.';
   static const List<SigapModelVariant> supportedVariants = [
     SigapModelVariant.e2b,
     SigapModelVariant.e4b,
@@ -102,6 +107,8 @@ class GemmaService extends ChangeNotifier {
   InferenceChat? _chat;
   PreferredBackend? _activeBackend;
   SigapModelVariant _selectedVariant = SigapModelVariant.e2b;
+  bool _prefsLoaded = false;
+  final Map<SigapModelVariant, String> _importedModelPaths = {};
 
   GemmaServiceState get state => _state;
   String get statusMessage => _statusMessage;
@@ -110,7 +117,8 @@ class GemmaService extends ChangeNotifier {
   bool get isReady => _state == GemmaServiceState.ready && _model != null;
   bool get isDownloading => _state == GemmaServiceState.downloading;
   bool get isDeleting => _state == GemmaServiceState.deleting;
-  bool get hasConfiguredLocalPath => configuredModelPath.trim().isNotEmpty;
+  bool get hasConfiguredLocalPath =>
+      (effectiveLocalModelPath?.trim().isNotEmpty ?? false);
   bool get hasConfiguredModelUrl => configuredModelUrl.trim().isNotEmpty;
   bool get needsDownload =>
       _state == GemmaServiceState.needsDownload ||
@@ -125,6 +133,24 @@ class GemmaService extends ChangeNotifier {
   String get selectedModelLabel => _selectedVariant.label;
   String get estimatedModelSizeLabel => _selectedVariant.estimatedSizeLabel;
   String get selectedModelDescription => _selectedVariant.setupDescription;
+  String? get effectiveLocalModelPath {
+    final configuredPath = configuredModelPath.trim();
+    if (configuredPath.isNotEmpty) {
+      return configuredPath;
+    }
+
+    final importedPath = _importedModelPaths[_selectedVariant];
+    if (importedPath == null || importedPath.trim().isEmpty) {
+      return null;
+    }
+
+    return importedPath;
+  }
+
+  bool get isUsingImportedLocalModel =>
+      configuredModelPath.trim().isEmpty &&
+      (_importedModelPaths[_selectedVariant]?.trim().isNotEmpty ?? false);
+
   String get effectiveModelUrl =>
       configuredModelUrl.trim().isNotEmpty
           ? configuredModelUrl.trim()
@@ -162,9 +188,10 @@ class GemmaService extends ChangeNotifier {
 
     try {
       await _ensurePluginInitialized();
+      await _ensureImportedModelPathsLoaded();
 
       if (hasConfiguredLocalPath) {
-        await _installFromLocalPath();
+        await _installFromLocalPath(effectiveLocalModelPath);
         if (_state == GemmaServiceState.missingModelFile ||
             _state == GemmaServiceState.missingModelPath) {
           return;
@@ -279,12 +306,62 @@ class GemmaService extends ChangeNotifier {
 
   Future<bool> isVariantInstalled(SigapModelVariant variant) async {
     await _ensurePluginInitialized();
-    if (hasConfiguredLocalPath) {
-      return File(configuredModelPath.trim()).existsSync();
+    await _ensureImportedModelPathsLoaded();
+    final configuredPath = configuredModelPath.trim();
+    if (configuredPath.isNotEmpty) {
+      return variant == _selectedVariant && File(configuredPath).existsSync();
+    }
+
+    final importedPath = _importedModelPaths[variant];
+    if (importedPath != null && importedPath.trim().isNotEmpty) {
+      return File(importedPath).existsSync();
     }
 
     final manager = FlutterGemmaPlugin.instance.modelManager;
     return manager.isModelInstalled(_buildModelSpec(variant));
+  }
+
+  Future<void> importSelectedModelFromPath(String sourcePath) async {
+    if (_isBusy) {
+      return;
+    }
+
+    _isBusy = true;
+    _setState(
+      GemmaServiceState.initializing,
+      'Menyalin ${_selectedVariant.label} ke penyimpanan internal aplikasi...',
+      progress: 0,
+    );
+
+    try {
+      await _ensurePluginInitialized();
+      await _ensureImportedModelPathsLoaded();
+
+      final importedPath = await _copyModelIntoAppStorage(sourcePath);
+      final previousImportedPath = _importedModelPaths[_selectedVariant];
+      _importedModelPaths[_selectedVariant] = importedPath;
+      await _persistImportedPath(_selectedVariant, importedPath);
+      if (previousImportedPath != null &&
+          previousImportedPath != importedPath &&
+          File(previousImportedPath).existsSync()) {
+        await File(previousImportedPath).delete();
+      }
+
+      await _installFromLocalPath(importedPath);
+      if (_state == GemmaServiceState.missingModelFile ||
+          _state == GemmaServiceState.missingModelPath) {
+        return;
+      }
+      await _loadActiveModel();
+    } catch (error) {
+      _setState(
+        GemmaServiceState.error,
+        'Gagal mengimpor ${_selectedVariant.label}: $error',
+      );
+      await _releaseResources();
+    } finally {
+      _isBusy = false;
+    }
   }
 
   Future<void> deleteSelectedModel() async {
@@ -293,12 +370,48 @@ class GemmaService extends ChangeNotifier {
     }
 
     await _ensurePluginInitialized();
+    await _ensureImportedModelPathsLoaded();
 
-    if (hasConfiguredLocalPath) {
+    final importedPath = _importedModelPaths[_selectedVariant];
+
+    if (configuredModelPath.trim().isNotEmpty) {
       _setState(
         GemmaServiceState.error,
         'Model file lokal dikelola di luar aplikasi. Hapus file tersebut langsung dari penyimpanan perangkat.',
       );
+      return;
+    }
+
+    if (importedPath != null && importedPath.trim().isNotEmpty) {
+      _isBusy = true;
+      _setState(
+        GemmaServiceState.deleting,
+        'Menghapus file ${_selectedVariant.label} dari penyimpanan internal aplikasi...',
+        progress: 0,
+      );
+
+      try {
+        await _releaseResources();
+        final importedFile = File(importedPath);
+        if (importedFile.existsSync()) {
+          await importedFile.delete();
+        }
+        _importedModelPaths.remove(_selectedVariant);
+        await _removePersistedImportedPath(_selectedVariant);
+        _activeBackend = null;
+        _setState(
+          GemmaServiceState.needsDownload,
+          '${_selectedVariant.label} lokal telah dihapus. Anda bisa mengimpor ulang file model atau memakai download online.',
+          progress: 0,
+        );
+      } catch (error) {
+        _setState(
+          GemmaServiceState.error,
+          'Gagal menghapus file ${_selectedVariant.label}: $error',
+        );
+      } finally {
+        _isBusy = false;
+      }
       return;
     }
 
@@ -384,8 +497,8 @@ class GemmaService extends ChangeNotifier {
     _pluginInitialized = true;
   }
 
-  Future<void> _installFromLocalPath() async {
-    final configuredPath = configuredModelPath.trim();
+  Future<void> _installFromLocalPath(String? localModelPath) async {
+    final configuredPath = localModelPath?.trim() ?? '';
     if (configuredPath.isEmpty) {
       _setState(
         GemmaServiceState.missingModelPath,
@@ -418,6 +531,73 @@ class GemmaService extends ChangeNotifier {
       'Memasang model lokal dari file device...',
       progress: 100,
     );
+  }
+
+  Future<void> _ensureImportedModelPathsLoaded() async {
+    if (_prefsLoaded) {
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    for (final variant in supportedVariants) {
+      final key = '$importedModelPathPrefsPrefix${variant.name}';
+      final value = prefs.getString(key);
+      if (value != null && value.trim().isNotEmpty) {
+        _importedModelPaths[variant] = value;
+      }
+    }
+    _prefsLoaded = true;
+  }
+
+  Future<void> _persistImportedPath(
+    SigapModelVariant variant,
+    String path,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('$importedModelPathPrefsPrefix${variant.name}', path);
+  }
+
+  Future<void> _removePersistedImportedPath(SigapModelVariant variant) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('$importedModelPathPrefsPrefix${variant.name}');
+  }
+
+  Future<String> _copyModelIntoAppStorage(String sourcePath) async {
+    final sourceFile = File(sourcePath);
+    if (!sourceFile.existsSync()) {
+      throw FileSystemException(
+        'File model yang dipilih tidak ditemukan.',
+        sourcePath,
+      );
+    }
+
+    final supportDirectory = await getApplicationSupportDirectory();
+    final modelsDirectory = Directory(
+      p.join(supportDirectory.path, 'models'),
+    );
+    if (!modelsDirectory.existsSync()) {
+      await modelsDirectory.create(recursive: true);
+    }
+
+    final extension = p.extension(sourcePath);
+    final destinationPath = p.join(
+      modelsDirectory.path,
+      '${_selectedVariant.name}$extension',
+    );
+    final destinationFile = File(destinationPath);
+
+    if (destinationFile.existsSync()) {
+      await destinationFile.delete();
+    }
+
+    final sink = destinationFile.openWrite();
+    try {
+      await sourceFile.openRead().pipe(sink);
+    } finally {
+      await sink.close();
+    }
+
+    return destinationPath;
   }
 
   Future<void> _loadActiveModel() async {

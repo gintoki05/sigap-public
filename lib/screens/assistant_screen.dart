@@ -18,7 +18,8 @@ class AssistantScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
-      create: (_) => AssistantViewModel(inputMode: initialInputMode)..initialize(),
+      create: (_) =>
+          AssistantViewModel(inputMode: initialInputMode)..initialize(),
       child: _AssistantScreenBody(initialQuery: initialQuery),
     );
   }
@@ -39,7 +40,9 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.initialQuery?.trim() ?? '');
+    _controller = TextEditingController(
+      text: widget.initialQuery?.trim() ?? '',
+    );
   }
 
   @override
@@ -59,6 +62,14 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
+          if (viewModel.isModelReady)
+            IconButton(
+              onPressed: viewModel.isBusy
+                  ? null
+                  : () => _deleteModel(context, viewModel),
+              icon: const Icon(Icons.delete_outline),
+              tooltip: 'Hapus model',
+            ),
           IconButton(
             onPressed: viewModel.toggleTts,
             icon: Icon(
@@ -82,17 +93,17 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
           Expanded(
             child: viewModel.isModelReady
                 ? (viewModel.messages.isEmpty
-                    ? _EmptyState(
-                        inputMode: viewModel.inputMode,
-                        serviceStatus: viewModel.serviceStatus,
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: viewModel.messages.length,
-                        itemBuilder: (context, index) => _MessageBubble(
-                          message: viewModel.messages[index],
-                        ),
-                      ))
+                      ? _EmptyState(
+                          inputMode: viewModel.inputMode,
+                          serviceStatus: viewModel.serviceStatus,
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: viewModel.messages.length,
+                          itemBuilder: (context, index) => _MessageBubble(
+                            message: viewModel.messages[index],
+                          ),
+                        ))
                 : _ModelSetupPanel(
                     service: viewModel.gemmaService,
                     status: viewModel.serviceStatus,
@@ -101,6 +112,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                     isDeleting: viewModel.isDeleting,
                     onSelectVariant: viewModel.selectVariant,
                     onDownload: () => _downloadModel(context, viewModel),
+                    onImportLocalFile: viewModel.importLocalModel,
                     onCancelDownload: () => _cancelDownload(context, viewModel),
                     onDelete: () => _deleteModel(context, viewModel),
                     onRetry: viewModel.initializeReadyModel,
@@ -267,10 +279,10 @@ class _ModelStatusBanner extends StatelessWidget {
     final statusLabel = isReady
         ? 'Model siap'
         : isDeleting
-            ? 'Menghapus model'
+        ? 'Menghapus model'
         : isDownloading
-            ? 'Sedang download'
-            : 'Perlu setup';
+        ? 'Sedang download'
+        : 'Perlu setup';
 
     return Container(
       width: double.infinity,
@@ -376,6 +388,7 @@ class _ModelSetupPanel extends StatelessWidget {
   final bool isDeleting;
   final Future<void> Function(SigapModelVariant variant) onSelectVariant;
   final Future<void> Function() onDownload;
+  final Future<void> Function() onImportLocalFile;
   final Future<void> Function() onCancelDownload;
   final Future<void> Function() onDelete;
   final Future<void> Function() onRetry;
@@ -388,6 +401,7 @@ class _ModelSetupPanel extends StatelessWidget {
     required this.isDeleting,
     required this.onSelectVariant,
     required this.onDownload,
+    required this.onImportLocalFile,
     required this.onCancelDownload,
     required this.onDelete,
     required this.onRetry,
@@ -395,7 +409,8 @@ class _ModelSetupPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isBusy = service.state == GemmaServiceState.downloading ||
+    final isBusy =
+        service.state == GemmaServiceState.downloading ||
         service.state == GemmaServiceState.deleting ||
         service.state == GemmaServiceState.initializing ||
         service.state == GemmaServiceState.checking;
@@ -516,10 +531,10 @@ class _ModelSetupPanel extends StatelessWidget {
                   value: service.hasConfiguredLocalPath
                       ? 'Mode developer: file lokal'
                       : isOnWifi == null
-                          ? 'Memeriksa jenis koneksi...'
-                          : isOnWifi!
-                              ? 'Wi-Fi terdeteksi, aman untuk download pertama'
-                              : 'Bukan Wi-Fi, perhatikan kuota data',
+                      ? 'Memeriksa jenis koneksi...'
+                      : isOnWifi!
+                      ? 'Wi-Fi terdeteksi, aman untuk download pertama'
+                      : 'Bukan Wi-Fi, perhatikan kuota data',
                 ),
                 const _SetupFact(
                   icon: Icons.offline_bolt_outlined,
@@ -612,35 +627,45 @@ class _ModelSetupPanel extends StatelessWidget {
                     const SizedBox(height: 4),
                     const Text(
                       'Menghitung sisa waktu...',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textGrey,
-                      ),
+                      style: TextStyle(fontSize: 12, color: AppColors.textGrey),
                     ),
                   ],
                 ],
                 const SizedBox(height: 20),
                 SizedBox(
                   width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: isBusy ? null : onImportLocalFile,
+                    icon: const Icon(Icons.folder_open),
+                    label: Text(
+                      service.isUsingImportedLocalModel
+                          ? 'Ganti File ${service.selectedModelLabel}'
+                          : 'Impor File ${service.selectedModelLabel}',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
                   child: ElevatedButton.icon(
                     onPressed: isBusy
                         ? null
                         : showDownloadButton
-                            ? onDownload
-                            : onRetry,
+                        ? onDownload
+                        : onRetry,
                     icon: Icon(
                       showDownloadButton
                           ? Icons.download
                           : selectedModelInstalled
-                              ? Icons.play_arrow
-                              : Icons.refresh,
+                          ? Icons.play_arrow
+                          : Icons.refresh,
                     ),
                     label: Text(
                       showDownloadButton
                           ? 'Download ${service.selectedModelLabel}'
                           : selectedModelInstalled
-                              ? 'Gunakan ${service.selectedModelLabel}'
-                              : 'Periksa ${service.selectedModelLabel}',
+                          ? 'Gunakan ${service.selectedModelLabel}'
+                          : 'Periksa ${service.selectedModelLabel}',
                     ),
                   ),
                 ),
@@ -743,10 +768,7 @@ class _SetupFact extends StatelessWidget {
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.textGrey,
-              ),
+              style: const TextStyle(fontSize: 13, color: AppColors.textGrey),
             ),
           ),
         ],
@@ -1008,48 +1030,57 @@ class _EmptyState extends StatelessWidget {
   final String inputMode;
   final String serviceStatus;
 
-  const _EmptyState({
-    required this.inputMode,
-    required this.serviceStatus,
-  });
+  const _EmptyState({required this.inputMode, required this.serviceStatus});
 
   @override
   Widget build(BuildContext context) {
     final prompt = switch (inputMode) {
       'voice' => 'Mode suara dipilih.\nModel akan dipakai setelah Gemma siap.',
-      'photo' => 'Mode foto dipilih.\nFitur vision belum diaktifkan pada tahap PRI-51.',
+      'photo' =>
+        'Mode foto dipilih.\nFitur vision belum diaktifkan pada tahap PRI-51.',
       _ => 'Ceritakan kondisi darurat\natau tekan BICARA',
     };
 
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.health_and_safety_outlined,
-            size: 64,
-            color: AppColors.navy.withValues(alpha: 0.3),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            prompt,
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: AppColors.textGrey, fontSize: 16),
-          ),
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Text(
-              serviceStatus,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: AppColors.textGrey,
-                fontSize: 12,
-                height: 1.4,
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: constraints.maxHeight),
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.health_and_safety_outlined,
+                  size: 64,
+                  color: AppColors.navy.withValues(alpha: 0.3),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  prompt,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppColors.textGrey,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Text(
+                    serviceStatus,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: AppColors.textGrey,
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1063,13 +1094,13 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Align(
-      alignment:
-          message.isUser ? Alignment.centerRight : Alignment.centerLeft,
+      alignment: message.isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        constraints:
-            BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.75,
+        ),
         decoration: BoxDecoration(
           color: message.isUser ? AppColors.navy : Colors.white,
           borderRadius: BorderRadius.circular(16),
