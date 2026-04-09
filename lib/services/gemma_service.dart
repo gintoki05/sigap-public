@@ -191,12 +191,20 @@ class GemmaService extends ChangeNotifier {
       await _ensureImportedModelPathsLoaded();
 
       if (hasConfiguredLocalPath) {
-        await _installFromLocalPath(effectiveLocalModelPath);
-        if (_state == GemmaServiceState.missingModelFile ||
-            _state == GemmaServiceState.missingModelPath) {
+        _setState(
+          GemmaServiceState.initializing,
+          'Menyiapkan ${_selectedVariant.label} dari file lokal...',
+        );
+
+        if (await _tryLoadExistingActiveModel()) {
           return;
         }
-        await _loadActiveModel();
+
+        await _installFromLocalPath(effectiveLocalModelPath);
+        if (_state != GemmaServiceState.missingModelFile &&
+            _state != GemmaServiceState.missingModelPath) {
+          await _loadActiveModel();
+        }
         return;
       }
 
@@ -213,6 +221,11 @@ class GemmaService extends ChangeNotifier {
           GemmaServiceState.initializing,
           'Menyiapkan ${_selectedVariant.label} yang sudah tersimpan...',
         );
+
+        if (await _tryLoadExistingActiveModel()) {
+          return;
+        }
+
         await _installConfiguredNetworkModel(skipProgressUpdate: true);
         await _loadActiveModel();
         return;
@@ -614,6 +627,22 @@ class GemmaService extends ChangeNotifier {
     );
   }
 
+  Future<bool> _tryLoadExistingActiveModel() async {
+    final hasActiveModel = FlutterGemma.hasActiveModel();
+    if (!hasActiveModel) {
+      return false;
+    }
+
+    try {
+      await _loadActiveModel();
+      return true;
+    } catch (_) {
+      await _releaseResources();
+      _activeBackend = null;
+      return false;
+    }
+  }
+
   Future<void> _installConfiguredNetworkModel({
     bool skipProgressUpdate = false,
   }) async {
@@ -705,7 +734,7 @@ class GemmaService extends ChangeNotifier {
     _chat = await model.createChat(
       modelType: ModelType.gemmaIt,
       supportsFunctionCalls: false,
-      isThinking: true,
+      isThinking: false,
       supportImage: false,
       supportAudio: false,
     );

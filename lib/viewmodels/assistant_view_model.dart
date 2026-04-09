@@ -51,6 +51,7 @@ class AssistantViewModel extends ChangeNotifier {
   bool? _isOnWifi;
   String _serviceStatus = 'Model Gemma belum diinisialisasi.';
   bool _isDisposed = false;
+  bool _isImportingLocalModel = false;
   final Map<SigapModelVariant, bool> _installedVariants = {};
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
@@ -69,9 +70,11 @@ class AssistantViewModel extends ChangeNotifier {
   bool get isDeleting => _gemmaService.isDeleting;
   int get downloadProgress => _gemmaService.downloadProgress;
   Duration? get downloadEta => _gemmaService.downloadEta;
+  bool get isImportingLocalModel => _isImportingLocalModel;
 
   bool get isBusy {
-    return _gemmaService.state == GemmaServiceState.initializing ||
+    return _isImportingLocalModel ||
+        _gemmaService.state == GemmaServiceState.initializing ||
         _gemmaService.state == GemmaServiceState.checking ||
         _gemmaService.state == GemmaServiceState.deleting;
   }
@@ -127,6 +130,12 @@ class AssistantViewModel extends ChangeNotifier {
   }
 
   Future<void> importLocalModel() async {
+    if (_isImportingLocalModel) {
+      return;
+    }
+
+    _isImportingLocalModel = true;
+    _serviceStatus = 'Membuka pemilih file model...';
     _notifySafely();
 
     try {
@@ -152,12 +161,18 @@ class AssistantViewModel extends ChangeNotifier {
         return;
       }
 
+      _serviceStatus =
+          'File dipilih. Menyalin ${_gemmaService.selectedModelLabel} ke penyimpanan aplikasi...';
+      _notifySafely();
       await _gemmaService.importSelectedModelFromPath(sourcePath);
       await _refreshInstalledVariants();
       _serviceStatus = _gemmaService.statusMessage;
       _notifySafely();
     } catch (error) {
       _serviceStatus = 'Gagal mengimpor model lokal: $error';
+      _notifySafely();
+    } finally {
+      _isImportingLocalModel = false;
       _notifySafely();
     }
   }

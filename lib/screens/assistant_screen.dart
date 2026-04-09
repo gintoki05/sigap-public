@@ -107,6 +107,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                 : _ModelSetupPanel(
                     service: viewModel.gemmaService,
                     status: viewModel.serviceStatus,
+                    isBusy: viewModel.isBusy,
                     installedVariants: viewModel.installedVariants,
                     isOnWifi: viewModel.isOnWifi,
                     isDeleting: viewModel.isDeleting,
@@ -383,6 +384,7 @@ class _ModelStatusBanner extends StatelessWidget {
 class _ModelSetupPanel extends StatelessWidget {
   final GemmaService service;
   final String status;
+  final bool isBusy;
   final Map<SigapModelVariant, bool> installedVariants;
   final bool? isOnWifi;
   final bool isDeleting;
@@ -396,6 +398,7 @@ class _ModelSetupPanel extends StatelessWidget {
   const _ModelSetupPanel({
     required this.service,
     required this.status,
+    required this.isBusy,
     required this.installedVariants,
     required this.isOnWifi,
     required this.isDeleting,
@@ -409,7 +412,7 @@ class _ModelSetupPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isBusy =
+    final isServiceBusy =
         service.state == GemmaServiceState.downloading ||
         service.state == GemmaServiceState.deleting ||
         service.state == GemmaServiceState.initializing ||
@@ -713,6 +716,28 @@ class _ModelSetupPanel extends StatelessWidget {
                       ),
                       label: const Text('Batalkan Download'),
                     ),
+                  ),
+                ],
+                if (!service.isDownloading && isBusy && !isServiceBusy) ...[
+                  const SizedBox(height: 12),
+                  const Row(
+                    children: [
+                      SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Menyiapkan impor model. Mohon tunggu sebentar...',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textGrey,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ],
@@ -1093,6 +1118,8 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isAssistantPlaceholder = !message.isUser && message.text.trim().isEmpty;
+
     return Align(
       alignment: message.isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -1108,12 +1135,34 @@ class _MessageBubble extends StatelessWidget {
               ? null
               : Border.all(color: AppColors.navy.withValues(alpha: 0.1)),
         ),
-        child: Text(
-          message.text,
-          style: TextStyle(
-            color: message.isUser ? Colors.white : AppColors.textDark,
-          ),
-        ),
+        child: isAssistantPlaceholder
+            ? const Row(
+                mainAxisSize: MainAxisSize.max,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'SIGAP sedang menyusun balasan...',
+                      maxLines: 2,
+                      softWrap: true,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: AppColors.textGrey),
+                    ),
+                  ),
+                ],
+              )
+            : Text(
+                message.text,
+                style: TextStyle(
+                  color: message.isUser ? Colors.white : AppColors.textDark,
+                ),
+              ),
       ),
     );
   }
