@@ -71,6 +71,11 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
               tooltip: 'Hapus model',
             ),
           IconButton(
+            onPressed: () => _showTtsSpeedSheet(context, viewModel),
+            icon: const Icon(Icons.speed_outlined),
+            tooltip: 'Kecepatan suara',
+          ),
+          IconButton(
             onPressed: viewModel.toggleTts,
             icon: Icon(
               viewModel.ttsEnabled ? Icons.volume_up : Icons.volume_off,
@@ -103,7 +108,13 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                           itemBuilder: (context, index) {
                             final message = viewModel.messages[index];
                             if (message.hasStructuredGuidance) {
-                              return _GuidanceCard(message: message);
+                              return _GuidanceCard(
+                                message: message,
+                                speechRate: viewModel.ttsSpeechRate,
+                                onReplay: () => viewModel.replayGuidance(
+                                  message.guidance!,
+                                ),
+                              );
                             }
                             return _MessageBubble(message: message);
                           },
@@ -237,6 +248,103 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
 
     await viewModel.cancelDownload();
   }
+
+  Future<void> _showTtsSpeedSheet(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    double draftRate = viewModel.ttsSpeechRate;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Kecepatan Panduan Suara',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.navy,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Atur kecepatan yang paling nyaman untuk diikuti saat menolong korban.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.textGrey.withValues(alpha: 0.9),
+                        height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Lambat',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textGrey,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.background,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            draftRate.toStringAsFixed(2),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.navy,
+                            ),
+                          ),
+                        ),
+                        const Text(
+                          'Cepat',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.textGrey,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      value: draftRate,
+                      min: 0.3,
+                      max: 0.8,
+                      divisions: 10,
+                      label: draftRate.toStringAsFixed(2),
+                      onChanged: (value) async {
+                        setModalState(() => draftRate = value);
+                        await viewModel.setTtsSpeechRate(value);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
 }
 
 class _ModelStatusBanner extends StatelessWidget {
@@ -272,82 +380,136 @@ class _ModelStatusBanner extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      padding: EdgeInsets.symmetric(
+        horizontal: 16,
+        vertical: isReady ? 8 : 10,
+      ),
       color: backgroundColor,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.85),
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Text(
-              statusLabel,
-              style: TextStyle(
-                color: foregroundColor,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Icon(
-                isReady ? Icons.check_circle_outline : Icons.info_outline,
-                color: foregroundColor,
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  status,
-                  style: TextStyle(
-                    color: foregroundColor,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
+      child: isReady
+          ? Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    statusLabel,
+                    style: TextStyle(
+                      color: foregroundColor,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
-              ),
-            ],
-          ),
-          if (isDownloading) ...[
-            const SizedBox(height: 10),
-            LinearProgressIndicator(
-              value: progress > 0 ? progress / 100 : null,
-              minHeight: 6,
-              color: AppColors.navy,
-              backgroundColor: Colors.white.withValues(alpha: 0.5),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.check_circle_outline,
+                        color: foregroundColor,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          status,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: foregroundColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            )
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    statusLabel,
+                    style: TextStyle(
+                      color: foregroundColor,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(
+                      Icons.info_outline,
+                      color: foregroundColor,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        status,
+                        style: TextStyle(
+                          color: foregroundColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (isDownloading) ...[
+                  const SizedBox(height: 10),
+                  LinearProgressIndicator(
+                    value: progress > 0 ? progress / 100 : null,
+                    minHeight: 6,
+                    color: AppColors.navy,
+                    backgroundColor: Colors.white.withValues(alpha: 0.5),
+                  ),
+                  if (eta != null) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      eta == Duration.zero
+                          ? 'Menyelesaikan proses akhir...'
+                          : 'Sisa sekitar ${_formatEta(eta!)}',
+                      style: TextStyle(
+                        color: foregroundColor,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ] else ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Menghitung sisa waktu...',
+                      style: TextStyle(
+                        color: foregroundColor,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ],
+              ],
             ),
-            if (eta != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                eta == Duration.zero
-                    ? 'Menyelesaikan proses akhir...'
-                    : 'Sisa sekitar ${_formatEta(eta!)}',
-                style: TextStyle(
-                  color: foregroundColor,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ] else ...[
-              const SizedBox(height: 6),
-              Text(
-                'Menghitung sisa waktu...',
-                style: TextStyle(
-                  color: foregroundColor,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ],
-        ],
-      ),
     );
   }
 
@@ -465,7 +627,7 @@ class _ModelSetupPanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Pilih model yang ingin disiapkan di perangkat, lalu unduh sekali agar asisten AI bisa dipakai secara lokal tanpa internet.',
+                  'Pilih model, lalu lakukan setup sekali agar asisten bisa dipakai offline di perangkat.',
                   style: TextStyle(
                     fontSize: 14,
                     color: AppColors.textDark,
@@ -484,7 +646,7 @@ class _ModelSetupPanel extends StatelessWidget {
                     ),
                   ),
                   child: const Text(
-                    'Ringkasnya: pilih E2B bila ingin mulai lebih cepat. Pilih E4B bila device Anda kuat dan Anda ingin kualitas respons yang lebih tinggi.',
+                    'E2B lebih ringan untuk mulai cepat. E4B lebih berat, tapi respons biasanya lebih baik.',
                     style: TextStyle(
                       fontSize: 13,
                       color: AppColors.textDark,
@@ -1179,9 +1341,15 @@ class _MessageBubble extends StatelessWidget {
 }
 
 class _GuidanceCard extends StatelessWidget {
-  const _GuidanceCard({required this.message});
+  const _GuidanceCard({
+    required this.message,
+    required this.speechRate,
+    required this.onReplay,
+  });
 
   final AssistantMessage message;
+  final double speechRate;
+  final Future<void> Function() onReplay;
 
   @override
   Widget build(BuildContext context) {
@@ -1230,6 +1398,36 @@ class _GuidanceCard extends StatelessWidget {
               color: AppColors.textDark,
               height: 1.4,
             ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: onReplay,
+                icon: const Icon(Icons.replay_outlined),
+                label: const Text('Ulangi'),
+              ),
+              const SizedBox(width: 8),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.speed_outlined,
+                    size: 16,
+                    color: AppColors.textGrey.withValues(alpha: 0.85),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Kecepatan ${speechRate.toStringAsFixed(2)}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textGrey.withValues(alpha: 0.9),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           _WarningBox(

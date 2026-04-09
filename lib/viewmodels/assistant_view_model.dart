@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../core/constants.dart';
 import '../services/gemma_service.dart';
 import '../services/rag_service.dart';
+import '../services/tts_service.dart';
 
 class AssistantGuidanceStep {
   const AssistantGuidanceStep({
@@ -69,9 +70,11 @@ class AssistantViewModel extends ChangeNotifier {
     GemmaService? gemmaService,
     Connectivity? connectivity,
     RagService? ragService,
+    TtsService? ttsService,
   })  : _inputMode = inputMode,
         _gemmaService = gemmaService ?? GemmaService(),
         _ragService = ragService ?? RagService(),
+        _ttsService = ttsService ?? TtsService(),
         _connectivity = connectivity ?? Connectivity() {
     _serviceStatus = _gemmaService.statusMessage;
   }
@@ -79,12 +82,14 @@ class AssistantViewModel extends ChangeNotifier {
   final String _inputMode;
   final GemmaService _gemmaService;
   final RagService _ragService;
+  final TtsService _ttsService;
   final Connectivity _connectivity;
 
   final List<AssistantMessage> _messages = [];
   UrgencyLevel _urgency = UrgencyLevel.green;
 
   bool _ttsEnabled = false;
+  double _ttsSpeechRate = TtsService.defaultSpeechRate;
   bool? _isOnWifi;
   String _serviceStatus = 'Model Gemma belum diinisialisasi.';
   bool _isDisposed = false;
@@ -97,6 +102,7 @@ class AssistantViewModel extends ChangeNotifier {
   List<AssistantMessage> get messages => List.unmodifiable(_messages);
   UrgencyLevel get urgency => _urgency;
   bool get ttsEnabled => _ttsEnabled;
+  double get ttsSpeechRate => _ttsSpeechRate;
   bool? get isOnWifi => _isOnWifi;
   String get serviceStatus => _serviceStatus;
   GemmaService get gemmaService => _gemmaService;
@@ -124,12 +130,36 @@ class AssistantViewModel extends ChangeNotifier {
         _connectivity.onConnectivityChanged.listen(_updateConnectivityState);
     await _refreshConnectivityState();
     await _ragService.initialize();
+    await _initializeTts();
     await initializeReadyModel();
   }
 
-  void toggleTts() {
-    _ttsEnabled = !_ttsEnabled;
-    notifyListeners();
+  Future<void> toggleTts() async {
+    final isEnabled = await _ttsService.toggle();
+    _ttsEnabled = isEnabled;
+    _notifySafely();
+
+    if (isEnabled) {
+      await _speakLatestGuidanceIfAvailable();
+    }
+  }
+
+  Future<void> setTtsSpeechRate(double value) async {
+    try {
+      _ttsSpeechRate = await _ttsService.setSpeechRate(value);
+      _notifySafely();
+    } catch (error) {
+      _serviceStatus = 'Kecepatan suara gagal diubah: $error';
+      _notifySafely();
+    }
+  }
+
+  Future<void> replayGuidance(AssistantGuidance guidance) async {
+    if (!_ttsEnabled) {
+      _ttsEnabled = await _ttsService.toggle();
+      _notifySafely();
+    }
+    await _speakGuidance(guidance);
   }
 
   Future<void> selectVariant(SigapModelVariant variant) async {
@@ -269,6 +299,7 @@ class AssistantViewModel extends ChangeNotifier {
         guidance: guidance,
       );
       _serviceStatus = _gemmaService.statusMessage;
+      await _handleGuidanceSpeech(guidance);
     } catch (error) {
       final message = 'Terjadi kesalahan saat memproses pesan: $error';
       _replaceLastAssistantMessage(message);
@@ -612,11 +643,71 @@ Laporan user: $userInput
         .trim();
   }
 
+  Future<void> _initializeTts() async {
+    try {
+      await _ttsService.initialize();
+      _ttsEnabled = _ttsService.isEnabled;
+      _ttsSpeechRate = _ttsService.speechRate;
+    } catch (error) {
+      _serviceStatus = 'TTS belum siap dipakai: $error';
+    }
+  }
+
+  Future<void> _handleGuidanceSpeech(AssistantGuidance guidance) async {
+    if (!_ttsEnabled && guidance.urgency != UrgencyLevel.red) {
+      return;
+    }
+
+    if (!_ttsEnabled && guidance.urgency == UrgencyLevel.red) {
+      _ttsEnabled = await _ttsService.toggle();
+      _notifySafely();
+    }
+
+    await _speakGuidance(guidance);
+  }
+
+  Future<void> _speakLatestGuidanceIfAvailable() async {
+    for (final message in _messages.reversed) {
+      final guidance = message.guidance;
+      if (guidance != null) {
+        await _speakGuidance(guidance);
+        return;
+      }
+    }
+  }
+
+  Future<void> _speakGuidance(AssistantGuidance guidance) async {
+    try {
+      await _ttsService.speak(_buildSpeechText(guidance));
+    } catch (error) {
+      _serviceStatus = 'Panduan suara gagal diputar: $error';
+      _notifySafely();
+    }
+  }
+
+  String _buildSpeechText(AssistantGuidance guidance) {
+    final buffer = StringBuffer()
+      ..writeln(guidance.summary)
+      ..writeln()
+      ..writeln('Perhatian: ${guidance.warning}');
+
+    for (var index = 0; index < guidance.steps.length; index++) {
+      final step = guidance.steps[index];
+      buffer.writeln();
+      buffer.writeln(
+        'Langkah ${index + 1}. ${step.title}. ${step.details}',
+      );
+    }
+
+    return buffer.toString().trim();
+  }
+
   @override
   void dispose() {
     _isDisposed = true;
     _connectivitySubscription?.cancel();
     _gemmaService.removeListener(_handleServiceUpdate);
+    unawaited(_ttsService.stop());
     super.dispose();
   }
 
