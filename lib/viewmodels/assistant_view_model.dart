@@ -46,24 +46,33 @@ class AssistantMessage {
     required this.role,
     required this.text,
     this.guidance,
+    this.photoBytes,
+    this.photoName,
   });
 
   final String role;
   final String text;
   final AssistantGuidance? guidance;
+  final Uint8List? photoBytes;
+  final String? photoName;
 
   bool get isUser => role == 'user';
   bool get hasStructuredGuidance => guidance != null;
+  bool get hasPhoto => photoBytes != null;
 
   AssistantMessage copyWith({
     String? role,
     String? text,
     AssistantGuidance? guidance,
+    Uint8List? photoBytes,
+    String? photoName,
   }) {
     return AssistantMessage(
       role: role ?? this.role,
       text: text ?? this.text,
       guidance: guidance ?? this.guidance,
+      photoBytes: photoBytes ?? this.photoBytes,
+      photoName: photoName ?? this.photoName,
     );
   }
 }
@@ -359,6 +368,7 @@ class AssistantViewModel extends ChangeNotifier {
 
   Future<void> sendPhotoMessage({
     required Uint8List imageBytes,
+    String? photoName,
     String text = '',
   }) async {
     final trimmedDraft = text.trim();
@@ -369,9 +379,11 @@ class AssistantViewModel extends ChangeNotifier {
 
       if (trimmedDraft.isEmpty) {
         _messages.add(
-          const AssistantMessage(
+          AssistantMessage(
             role: 'user',
             text: 'Saya melampirkan foto kondisi.',
+            photoBytes: imageBytes,
+            photoName: photoName,
           ),
         );
         _messages.add(
@@ -391,6 +403,8 @@ class AssistantViewModel extends ChangeNotifier {
         ragQuery: trimmedDraft,
         responseStreamBuilder: (prompt) => _gemmaService.generateResponse(prompt),
         hasPhotoAttachmentWithoutVision: true,
+        userPhotoBytes: imageBytes,
+        userPhotoName: photoName,
       );
       return;
     }
@@ -413,6 +427,8 @@ class AssistantViewModel extends ChangeNotifier {
         imageBytes: imageBytes,
       ),
       includePhotoContext: true,
+      userPhotoBytes: imageBytes,
+      userPhotoName: photoName,
     );
   }
 
@@ -423,12 +439,21 @@ class AssistantViewModel extends ChangeNotifier {
     required Stream<String> Function(String prompt) responseStreamBuilder,
     bool includePhotoContext = false,
     bool hasPhotoAttachmentWithoutVision = false,
+    Uint8List? userPhotoBytes,
+    String? userPhotoName,
   }) async {
     if (_isSendingMessage) {
       return;
     }
 
-    _messages.add(AssistantMessage(role: 'user', text: userMessage));
+    _messages.add(
+      AssistantMessage(
+        role: 'user',
+        text: userMessage,
+        photoBytes: userPhotoBytes,
+        photoName: userPhotoName,
+      ),
+    );
     _messages.add(const AssistantMessage(role: 'assistant', text: ''));
     _isSendingMessage = true;
     _notifySafely();

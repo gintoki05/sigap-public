@@ -164,6 +164,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     if (pendingPhoto != null) {
       await viewModel.sendPhotoMessage(
         imageBytes: pendingPhoto.bytes,
+        photoName: pendingPhoto.name,
         text: text,
       );
       return;
@@ -1613,12 +1614,13 @@ class _MessageBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isAssistantPlaceholder = !message.isUser && message.text.trim().isEmpty;
+    final bubbleTextColor = message.isUser ? Colors.white : AppColors.textDark;
 
     return Align(
       alignment: message.isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         constraints: BoxConstraints(
           maxWidth: MediaQuery.of(context).size.width * 0.75,
         ),
@@ -1651,11 +1653,41 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ],
               )
-            : Text(
-                message.text,
-                style: TextStyle(
-                  color: message.isUser ? Colors.white : AppColors.textDark,
-                ),
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (message.hasPhoto) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        message.photoBytes!,
+                        width: double.infinity,
+                        height: 164,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    if ((message.photoName?.trim().isNotEmpty ?? false)) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        message.photoName!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: bubbleTextColor.withValues(alpha: 0.75),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                    if (message.text.trim().isNotEmpty) const SizedBox(height: 10),
+                  ],
+                  if (message.text.trim().isNotEmpty)
+                    Text(
+                      message.text,
+                      style: TextStyle(color: bubbleTextColor),
+                    ),
+                ],
               ),
       ),
     );
