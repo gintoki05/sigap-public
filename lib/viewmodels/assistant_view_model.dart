@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -101,8 +105,10 @@ class AssistantGuidanceRequest {
     required this.ragQuery,
     this.includePhotoContext = false,
     this.hasPhotoAttachmentWithoutVision = false,
+    this.includeAudioContext = false,
     this.userPhotoBytes,
     this.userPhotoName,
+    this.userAudioBytes,
   });
 
   final String userMessage;
@@ -110,10 +116,13 @@ class AssistantGuidanceRequest {
   final String ragQuery;
   final bool includePhotoContext;
   final bool hasPhotoAttachmentWithoutVision;
+  final bool includeAudioContext;
   final Uint8List? userPhotoBytes;
   final String? userPhotoName;
+  final Uint8List? userAudioBytes;
 
   bool get usesImageInference => includePhotoContext && userPhotoBytes != null;
+  bool get usesAudioInference => includeAudioContext && userAudioBytes != null;
 }
 
 class EmergencyLaunchResult {
@@ -133,6 +142,7 @@ class AssistantViewModel extends ChangeNotifier {
   static const String _emergencyContactPhoneKey =
       'sigap.emergency_contact_phone';
   static const String _visionBetaEnabledKey = 'sigap.vision_beta_enabled';
+  static const Duration _maxVoiceRecordingDuration = Duration(seconds: 20);
 
   AssistantViewModel({
     required String inputMode,
@@ -153,6 +163,7 @@ class AssistantViewModel extends ChangeNotifier {
   final RagService _ragService;
   final TtsService _ttsService;
   final Connectivity _connectivity;
+  final AudioRecorder _audioRecorder = AudioRecorder();
 
   final List<AssistantMessage> _messages = [];
   UrgencyLevel _urgency = UrgencyLevel.green;
@@ -167,7 +178,11 @@ class AssistantViewModel extends ChangeNotifier {
   bool _isImportingLocalModel = false;
   bool _isSendingMessage = false;
   bool _isSendingEmergency = false;
+  bool _isRecordingVoice = false;
   bool _isVisionBetaEnabled = false;
+  Duration _voiceRecordingDuration = Duration.zero;
+  Timer? _voiceRecordingTimer;
+  String? _voiceRecordingPath;
   AssistantVisionState _visionState = AssistantVisionState.disabled;
   AssistantGuidanceRequest? _lastGuidanceRequest;
   int? _lastAssistantResponseIndex;
@@ -212,6 +227,8 @@ class AssistantViewModel extends ChangeNotifier {
   Duration? get downloadEta => _gemmaService.downloadEta;
   bool get isImportingLocalModel => _isImportingLocalModel;
   bool get isSendingEmergency => _isSendingEmergency;
+  bool get isRecordingVoice => _isRecordingVoice;
+  Duration get voiceRecordingDuration => _voiceRecordingDuration;
   bool get hasEmergencyContact =>
       (_emergencyContactName?.trim().isNotEmpty ?? false) &&
       (_emergencyContactPhone?.trim().isNotEmpty ?? false);
@@ -401,10 +418,141 @@ class AssistantViewModel extends ChangeNotifier {
     );
   }
 
-  void startVoice() {
-    _serviceStatus =
-        'Input suara belum tersedia pada model aktif SIGAP. Dukungan audio di flutter_gemma masih perlu divalidasi untuk artefak model yang dipakai sekarang.';
-    _notifySafely();
+  Future<void> startVoice() async {
+    if (_isRecordingVoice) {
+      await _stopVoiceRecordingAndSend();
+      return;
+    }
+
+    await _startVoiceRecording();
+  }
+
+  Future<void> _startVoiceRecording() async {
+    if (_isSendingMessage || !_gemmaService.isReady) {
+      _serviceStatus =
+          'Model masih sibuk atau belum siap. Tunggu sampai Gemma siap sebelum merekam suara.';
+      _notifySafely();
+      return;
+    }
+
+    try {
+      final microphoneStatus = await Permission.microphone.request();
+      if (!microphoneStatus.isGranted) {
+        _serviceStatus =
+            'Izin mikrofon belum diberikan. Aktifkan izin mikrofon untuk mencoba input suara.';
+        _notifySafely();
+        return;
+      }
+
+      final hasPermission = await _audioRecorder.hasPermission();
+      if (!hasPermission) {
+        _serviceStatus =
+            'Izin mikrofon belum diberikan. Aktifkan izin mikrofon untuk mencoba input suara.';
+        _notifySafely();
+        return;
+      }
+
+      final tempDirectory = await getTemporaryDirectory();
+      final path =
+          '${tempDirectory.path}${Platform.pathSeparator}sigap_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
+      await _audioRecorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 16000,
+          numChannels: 1,
+          bitRate: 256000,
+        ),
+        path: path,
+      );
+
+      _voiceRecordingPath = path;
+      _voiceRecordingDuration = Duration.zero;
+      _isRecordingVoice = true;
+      _serviceStatus =
+          'Merekam suara... tekan tombol mikrofon lagi untuk mengirim. Maksimal 20 detik.';
+      _voiceRecordingTimer?.cancel();
+      _voiceRecordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        _voiceRecordingDuration += const Duration(seconds: 1);
+        if (_voiceRecordingDuration >= _maxVoiceRecordingDuration) {
+          unawaited(_stopVoiceRecordingAndSend());
+          return;
+        }
+        _notifySafely();
+      });
+      _notifySafely();
+    } catch (error) {
+      _isRecordingVoice = false;
+      _voiceRecordingDuration = Duration.zero;
+      _voiceRecordingPath = null;
+      _serviceStatus = 'Gagal mulai merekam suara: $error';
+      _notifySafely();
+    }
+  }
+
+  Future<void> _stopVoiceRecordingAndSend() async {
+    if (!_isRecordingVoice) {
+      return;
+    }
+
+    _voiceRecordingTimer?.cancel();
+    _voiceRecordingTimer = null;
+
+    String? path;
+    try {
+      path = await _audioRecorder.stop();
+      _isRecordingVoice = false;
+      _serviceStatus = 'Rekaman suara selesai. SIGAP mencoba memahami audio...';
+      _notifySafely();
+
+      final effectivePath = path ?? _voiceRecordingPath;
+      if (effectivePath == null || effectivePath.trim().isEmpty) {
+        _serviceStatus = 'Rekaman suara tidak menghasilkan file audio.';
+        _notifySafely();
+        return;
+      }
+
+      final file = File(effectivePath);
+      if (!file.existsSync()) {
+        _serviceStatus = 'File rekaman suara tidak ditemukan.';
+        _notifySafely();
+        return;
+      }
+
+      final audioBytes = await file.readAsBytes();
+      try {
+        await file.delete();
+      } catch (_) {
+        // Temporary recording cleanup failure should not block guidance.
+      }
+
+      if (audioBytes.isEmpty) {
+        _serviceStatus = 'Rekaman suara kosong. Coba rekam ulang lebih dekat.';
+        _notifySafely();
+        return;
+      }
+
+      await sendVoiceMessage(audioBytes: audioBytes);
+    } catch (error) {
+      _isRecordingVoice = false;
+      _serviceStatus =
+          'Input suara beta gagal. Coba pakai chat teks dulu. Detail: $error';
+      _notifySafely();
+    } finally {
+      _voiceRecordingPath = null;
+      _voiceRecordingDuration = Duration.zero;
+      _notifySafely();
+    }
+  }
+
+  Future<void> sendVoiceMessage({required Uint8List audioBytes}) async {
+    await _sendGuidanceRequest(
+      userMessage: 'Saya mengirim rekaman suara kondisi darurat.',
+      fallbackInput:
+          'User mengirim rekaman suara berbahasa Indonesia tentang kondisi pertolongan pertama. Dengarkan audio dan susun panduan P3K yang aman. Jika audio tidak jelas, minta user mengulangi atau menulis lewat chat.',
+      ragQuery: 'rekaman suara kondisi darurat pertolongan pertama',
+      includeAudioContext: true,
+      userAudioBytes: audioBytes,
+    );
   }
 
   Future<AssistantPhotoAttachment?> capturePhoto() async {
@@ -544,8 +692,10 @@ class AssistantViewModel extends ChangeNotifier {
     required String ragQuery,
     bool includePhotoContext = false,
     bool hasPhotoAttachmentWithoutVision = false,
+    bool includeAudioContext = false,
     Uint8List? userPhotoBytes,
     String? userPhotoName,
+    Uint8List? userAudioBytes,
   }) async {
     final request = AssistantGuidanceRequest(
       userMessage: userMessage,
@@ -553,8 +703,10 @@ class AssistantViewModel extends ChangeNotifier {
       ragQuery: ragQuery,
       includePhotoContext: includePhotoContext,
       hasPhotoAttachmentWithoutVision: hasPhotoAttachmentWithoutVision,
+      includeAudioContext: includeAudioContext,
       userPhotoBytes: userPhotoBytes,
       userPhotoName: userPhotoName,
+      userAudioBytes: userAudioBytes,
     );
 
     await _startGuidanceRequest(request);
@@ -611,6 +763,7 @@ class AssistantViewModel extends ChangeNotifier {
         includePhotoContext: request.includePhotoContext,
         hasPhotoAttachmentWithoutVision:
             request.hasPhotoAttachmentWithoutVision,
+        includeAudioContext: request.includeAudioContext,
       );
       await for (final token in _streamResponseForRequest(request, prompt)) {
         buffer.write(token);
@@ -622,6 +775,14 @@ class AssistantViewModel extends ChangeNotifier {
       }
       if (request.usesImageInference) {
         _visionState = AssistantVisionState.enabled;
+      }
+      if (request.usesAudioInference &&
+          _gemmaService.state == GemmaServiceState.error) {
+        final message =
+            'Input suara beta belum berhasil di model aktif. Tulis kondisi lewat chat teks dulu agar SIGAP tetap bisa membantu. ${_gemmaService.lastInferenceDebugLabel}';
+        _replaceAssistantMessageAt(assistantMessageIndex, message);
+        _serviceStatus = message;
+        return;
       }
       final guidance = _buildStructuredGuidance(
         rawText: buffer.toString(),
@@ -642,6 +803,13 @@ class AssistantViewModel extends ChangeNotifier {
           assistantMessageIndex: assistantMessageIndex,
           error: error,
         );
+        return;
+      }
+      if (request.usesAudioInference) {
+        final message =
+            'Input suara beta gagal diproses oleh model aktif: $error. Tulis kondisi lewat chat teks dulu agar SIGAP tetap bisa membantu.';
+        _replaceAssistantMessageAt(assistantMessageIndex, message);
+        _serviceStatus = message;
         return;
       }
       final message = 'Terjadi kesalahan saat memproses pesan: $error';
@@ -780,6 +948,13 @@ class AssistantViewModel extends ChangeNotifier {
       );
     }
 
+    if (request.usesAudioInference) {
+      return _gemmaService.generateResponseWithAudio(
+        prompt: prompt,
+        audioBytes: request.userAudioBytes!,
+      );
+    }
+
     return _gemmaService.generateResponse(prompt);
   }
 
@@ -804,12 +979,21 @@ class AssistantViewModel extends ChangeNotifier {
     required List<String> ragContext,
     bool includePhotoContext = false,
     bool hasPhotoAttachmentWithoutVision = false,
+    bool includeAudioContext = false,
   }) {
     final hasContext = ragContext.isNotEmpty;
     final contextBlock = hasContext
         ? ragContext.map((item) => '- $item').join('\n')
         : '- Tidak ada konteks RAG tambahan yang terverifikasi di perangkat saat ini.';
-    final modalityBlock = includePhotoContext
+    final modalityBlock = includeAudioContext
+        ? '''
+Ada satu rekaman suara dari user.
+- Dengarkan audio untuk menangkap laporan kondisi darurat.
+- Jika audio tidak jelas, terlalu pendek, atau bahasa tidak terbaca, jangan menebak detail medis.
+- Bila informasi penting belum jelas, minta user mengulang atau menulis lewat chat: usia korban, gejala utama, kesadaran, napas, perdarahan, dan durasi kejadian.
+- Tetap berikan langkah aman yang konservatif berdasarkan informasi yang terdengar jelas saja.
+'''
+        : includePhotoContext
         ? '''
 Ada satu foto luka atau kondisi P3K dari kamera user.
 - Fokuskan observasi visual pada triase luka atau kondisi pertolongan pertama, bukan deskripsi umum foto.
@@ -1307,8 +1491,10 @@ Buka peta: $mapsLink
   void dispose() {
     _isDisposed = true;
     _connectivitySubscription?.cancel();
+    _voiceRecordingTimer?.cancel();
     _gemmaService.removeListener(_handleServiceUpdate);
     unawaited(_ttsService.stop());
+    unawaited(_audioRecorder.dispose());
     super.dispose();
   }
 
