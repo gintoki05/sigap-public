@@ -128,6 +128,7 @@ class GemmaService extends ChangeNotifier {
   PreferredBackend? _activeBackend;
   PreferredBackend? _lastInferenceBackend;
   bool _lastInferenceUsedVision = false;
+  bool _lastInferenceUsedAudio = false;
   bool _lastVisionRetriedToCpu = false;
   String _lastInferenceDebugLabel = 'Belum ada inference yang dijalankan.';
   bool _hasLoadedModelSuccessfully = false;
@@ -157,6 +158,7 @@ class GemmaService extends ChangeNotifier {
   PreferredBackend? get activeBackend => _activeBackend;
   PreferredBackend? get lastInferenceBackend => _lastInferenceBackend;
   bool get lastInferenceUsedVision => _lastInferenceUsedVision;
+  bool get lastInferenceUsedAudio => _lastInferenceUsedAudio;
   bool get lastVisionRetriedToCpu => _lastVisionRetriedToCpu;
   String get lastInferenceDebugLabel => _lastInferenceDebugLabel;
   SigapModelVariant get selectedVariant => _selectedVariant;
@@ -513,6 +515,7 @@ class GemmaService extends ChangeNotifier {
     );
 
     _lastInferenceUsedVision = true;
+    _lastInferenceUsedAudio = false;
     _lastVisionRetriedToCpu = false;
 
     try {
@@ -553,6 +556,25 @@ class GemmaService extends ChangeNotifier {
     }
   }
 
+  Stream<String> generateResponseWithAudio({
+    required String prompt,
+    required Uint8List audioBytes,
+  }) async* {
+    if (!isReady) {
+      yield _statusMessage;
+      return;
+    }
+
+    yield* _generateResponseForMessage(
+      Message.withAudio(
+        text: prompt,
+        audioBytes: audioBytes,
+        isUser: true,
+      ),
+      supportAudio: true,
+    );
+  }
+
   Stream<String> _generateResponseForMessage(
     Message message, {
     bool supportImage = false,
@@ -570,6 +592,7 @@ class GemmaService extends ChangeNotifier {
       );
       _lastInferenceBackend = _activeBackend;
       _lastInferenceUsedVision = supportImage;
+      _lastInferenceUsedAudio = supportAudio;
       if (!supportImage) {
         _lastVisionRetriedToCpu = false;
       }
@@ -582,6 +605,8 @@ class GemmaService extends ChangeNotifier {
       }
       _lastInferenceDebugLabel = supportImage
           ? 'Analisis foto beta berhasil dengan backend ${_backendLabel(_activeBackend)}${_lastVisionRetriedToCpu ? ' setelah retry CPU.' : '.'}'
+          : supportAudio
+          ? 'Input suara beta berhasil dengan backend ${_backendLabel(_activeBackend)}.'
           : 'Respons teks berhasil dengan backend ${_backendLabel(_activeBackend)}.';
     } catch (error) {
       _setState(

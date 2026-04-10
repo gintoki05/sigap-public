@@ -177,6 +177,8 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                 isVisionBetaEnabled: viewModel.isVisionBetaEnabled,
                 visionState: viewModel.visionState,
                 onToggleVisionBeta: viewModel.setVisionBetaEnabled,
+                isRecordingVoice: viewModel.isRecordingVoice,
+                voiceRecordingDuration: viewModel.voiceRecordingDuration,
               ),
             ),
             ),
@@ -2078,7 +2080,7 @@ class _FollowUpQuestion extends StatelessWidget {
 class _BottomInputBar extends StatelessWidget {
   final TextEditingController controller;
   final Future<void> Function() onSend;
-  final VoidCallback onVoice;
+  final Future<void> Function() onVoice;
   final Future<void> Function() onPhoto;
   final Future<void> Function() onEmergency;
   final bool isBusy;
@@ -2091,6 +2093,8 @@ class _BottomInputBar extends StatelessWidget {
   final bool isVisionBetaEnabled;
   final AssistantVisionState visionState;
   final Future<void> Function(bool value) onToggleVisionBeta;
+  final bool isRecordingVoice;
+  final Duration voiceRecordingDuration;
 
   const _BottomInputBar({
     required this.controller,
@@ -2108,6 +2112,8 @@ class _BottomInputBar extends StatelessWidget {
     required this.isVisionBetaEnabled,
     required this.visionState,
     required this.onToggleVisionBeta,
+    required this.isRecordingVoice,
+    required this.voiceRecordingDuration,
   });
 
   @override
@@ -2256,6 +2262,41 @@ class _BottomInputBar extends StatelessWidget {
               ),
             ),
           ],
+          if (isRecordingVoice)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.red.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: AppColors.red.withValues(alpha: 0.18),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.mic,
+                    size: 18,
+                    color: AppColors.red,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Merekam suara ${_formatDuration(voiceRecordingDuration)}. Tekan mikrofon lagi untuk kirim.',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textDark,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Row(
             children: [
               Expanded(
@@ -2428,8 +2469,14 @@ class _BottomInputBar extends StatelessWidget {
           Row(
             children: [
               IconButton(
-                onPressed: onVoice,
-                icon: const Icon(Icons.mic, color: AppColors.navy),
+                onPressed: () async => onVoice(),
+                icon: Icon(
+                  isRecordingVoice ? Icons.stop_circle : Icons.mic,
+                  color: isRecordingVoice ? AppColors.red : AppColors.navy,
+                ),
+                tooltip: isRecordingVoice
+                    ? 'Stop dan kirim rekaman'
+                    : 'Rekam suara',
               ),
               IconButton(
                 onPressed: () async => onPhoto(),
@@ -2472,5 +2519,11 @@ class _BottomInputBar extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _formatDuration(Duration duration) {
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
   }
 }
