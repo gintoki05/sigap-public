@@ -258,6 +258,8 @@ class AssistantViewModel extends ChangeNotifier {
     await _loadVisionBetaPreference();
     await _ragService.initialize();
     await _initializeTts();
+    await _refreshInstalledVariants();
+    _notifySafely();
     await initializeReadyModel();
   }
 
@@ -531,7 +533,10 @@ class AssistantViewModel extends ChangeNotifier {
         return;
       }
 
-      await sendVoiceMessage(audioBytes: audioBytes);
+      await sendVoiceMessage(
+        audioBytes: audioBytes,
+        duration: _voiceRecordingDuration,
+      );
     } catch (error) {
       _isRecordingVoice = false;
       _serviceStatus =
@@ -544,9 +549,15 @@ class AssistantViewModel extends ChangeNotifier {
     }
   }
 
-  Future<void> sendVoiceMessage({required Uint8List audioBytes}) async {
+  Future<void> sendVoiceMessage({
+    required Uint8List audioBytes,
+    Duration? duration,
+  }) async {
+    final durationLabel = _formatRecordingDuration(duration);
     await _sendGuidanceRequest(
-      userMessage: 'Saya mengirim rekaman suara kondisi darurat.',
+      userMessage: durationLabel == null
+          ? 'Saya mengirim rekaman suara kondisi darurat.'
+          : 'Saya mengirim rekaman suara kondisi darurat ($durationLabel).',
       fallbackInput:
           'User mengirim rekaman suara berbahasa Indonesia tentang kondisi pertolongan pertama. Dengarkan audio dan susun panduan P3K yang aman. Jika audio tidak jelas, minta user mengulangi atau menulis lewat chat.',
       ragQuery: 'rekaman suara kondisi darurat pertolongan pertama',
@@ -1485,6 +1496,16 @@ Buka peta: $mapsLink
     }
 
     return buffer.toString().trim();
+  }
+
+  String? _formatRecordingDuration(Duration? duration) {
+    if (duration == null || duration <= Duration.zero) {
+      return null;
+    }
+
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
   }
 
   @override

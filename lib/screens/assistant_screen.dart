@@ -45,6 +45,8 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
 
   late final TextEditingController _controller;
   AssistantPhotoAttachment? _pendingPhoto;
+  bool _hasAutoStartedVoice = false;
+  bool _hasAutoOpenedPhoto = false;
 
   @override
   void initState() {
@@ -63,6 +65,17 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
   @override
   Widget build(BuildContext context) {
     final viewModel = context.watch<AssistantViewModel>();
+    final selectedModelInstalled =
+        viewModel.installedVariants[viewModel.gemmaService.selectedVariant] ??
+        false;
+    final shouldKeepAssistantScrollable =
+        selectedModelInstalled &&
+        (viewModel.gemmaService.state == GemmaServiceState.initializing ||
+            viewModel.gemmaService.state == GemmaServiceState.checking);
+    final showAssistantShell =
+        viewModel.isModelReady || shouldKeepAssistantScrollable;
+    _maybeAutoStartVoice(viewModel);
+    _maybeAutoOpenPhoto(viewModel);
 
     return Scaffold(
       appBar: AppBar(
@@ -100,7 +113,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
             onTap: () => _showStatusDetailsSheet(context, viewModel),
           ),
           Expanded(
-            child: viewModel.isModelReady
+            child: showAssistantShell
                 ? (viewModel.messages.isEmpty
                       ? _EmptyState(
                           inputMode: viewModel.inputMode,
@@ -185,6 +198,53 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
         ],
       ),
     );
+  }
+
+  void _maybeAutoStartVoice(AssistantViewModel viewModel) {
+    final shouldAutoStart =
+        !_hasAutoStartedVoice &&
+        widget.initialQuery == null &&
+        viewModel.inputMode == 'voice' &&
+        viewModel.isModelReady &&
+        !viewModel.isBusy &&
+        !viewModel.isRecordingVoice &&
+        viewModel.messages.isEmpty;
+
+    if (!shouldAutoStart) {
+      return;
+    }
+
+    _hasAutoStartedVoice = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      viewModel.startVoice();
+    });
+  }
+
+  void _maybeAutoOpenPhoto(AssistantViewModel viewModel) {
+    final shouldAutoOpenPhoto =
+        !_hasAutoOpenedPhoto &&
+        widget.initialQuery == null &&
+        viewModel.inputMode == 'photo' &&
+        viewModel.isModelReady &&
+        !viewModel.isBusy &&
+        !viewModel.isRecordingVoice &&
+        _pendingPhoto == null &&
+        viewModel.messages.isEmpty;
+
+    if (!shouldAutoOpenPhoto) {
+      return;
+    }
+
+    _hasAutoOpenedPhoto = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _pickPhoto(viewModel);
+    });
   }
 
   Future<void> _sendMessage(AssistantViewModel viewModel) async {
@@ -1819,32 +1879,34 @@ class _GuidanceCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          Wrap(
-            spacing: 2,
-            runSpacing: 2,
-            children: [
-              TextButton.icon(
-                onPressed: onReplay,
-                icon: const Icon(Icons.volume_up_outlined),
-                label: const Text('Putar Lagi'),
-              ),
-              TextButton.icon(
-                onPressed: onAdjustSpeed,
-                icon: const Icon(Icons.speed_outlined),
-                label: Text(speechRate.toStringAsFixed(2)),
-              ),
-              if (onRegenerate != null)
-                TextButton.icon(
-                  onPressed: onRegenerate,
-                  icon: const Icon(Icons.refresh_rounded),
-                  label: const Text('Regenerate'),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _GuidanceActionButton(
+                  onPressed: onReplay,
+                  icon: Icons.volume_up_outlined,
+                  label: 'Putar Lagi',
                 ),
-            ],
+                const SizedBox(width: 8),
+                _GuidanceActionButton(
+                  onPressed: onAdjustSpeed,
+                  icon: Icons.speed_outlined,
+                  label: speechRate.toStringAsFixed(2),
+                ),
+                if (onRegenerate != null) ...[
+                  const SizedBox(width: 8),
+                  _GuidanceActionButton(
+                    onPressed: onRegenerate,
+                    icon: Icons.refresh_rounded,
+                    label: 'Regenerate',
+                  ),
+                ],
+              ],
+            ),
           ),
           const SizedBox(height: 8),
           _WarningBox(color: urgencyColor, warning: guidance.warning),
-          const SizedBox(height: 8),
-          const _MedicalDisclaimerBox(),
           const SizedBox(height: 12),
           const Text(
             'Langkah yang disarankan',
@@ -1894,6 +1956,40 @@ class _GuidanceCard extends StatelessWidget {
   }
 }
 
+class _GuidanceActionButton extends StatelessWidget {
+  const _GuidanceActionButton({
+    required this.onPressed,
+    required this.icon,
+    required this.label,
+  });
+
+  final Future<void> Function()? onPressed;
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton.icon(
+      onPressed: onPressed == null ? null : () => onPressed!.call(),
+      icon: Icon(icon, size: 16),
+      label: Text(label),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.navy,
+        side: BorderSide(color: AppColors.navy.withValues(alpha: 0.14)),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        minimumSize: const Size(0, 36),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        textStyle: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+  }
+}
+
 class _WarningBox extends StatelessWidget {
   const _WarningBox({required this.color, required this.warning});
 
@@ -1922,45 +2018,6 @@ class _WarningBox extends StatelessWidget {
                 fontSize: 12,
                 height: 1.4,
                 color: AppColors.textDark,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MedicalDisclaimerBox extends StatelessWidget {
-  const _MedicalDisclaimerBox();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.background,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.navy.withValues(alpha: 0.08)),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            Icons.info_outline_rounded,
-            color: AppColors.navy,
-            size: 18,
-          ),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              'Panduan AI ini bisa keliru, terutama dari foto atau informasi yang terbatas. Jika luka tampak berat, dalam, kotor, terus berdarah, atau kondisi memburuk, segera periksa ke dokter atau fasilitas kesehatan.',
-              style: TextStyle(
-                fontSize: 12,
-                height: 1.4,
-                color: AppColors.textGrey,
                 fontWeight: FontWeight.w600,
               ),
             ),

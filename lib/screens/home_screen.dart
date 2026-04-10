@@ -293,13 +293,15 @@ class _HomeTab extends StatelessWidget {
                   _GuideStep(
                     number: 1,
                     title: 'Pilih Tombol Bantuan',
-                    description: "Tekan tombol 'Bicara' untuk laporan suara atau 'Chat' untuk teks.",
+                    description:
+                        "Tekan tombol 'Bicara' untuk laporan suara atau 'Chat' untuk teks.",
                   ),
                   const SizedBox(height: 16),
                   _GuideStep(
                     number: 2,
                     title: 'Ikuti instruksi AI sambil hubungi bantuan',
-                    description: 'Gunakan panduan dari asisten cerdas SIGAP sementara Anda menghubungi bantuan medis terdekat.',
+                    description:
+                        'Gunakan panduan dari asisten cerdas SIGAP sementara Anda menghubungi bantuan medis terdekat.',
                   ),
                 ],
               ),
