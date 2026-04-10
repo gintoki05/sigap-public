@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -143,6 +144,49 @@ class AssistantViewModel extends ChangeNotifier {
       'sigap.emergency_contact_phone';
   static const String _visionBetaEnabledKey = 'sigap.vision_beta_enabled';
   static const Duration _maxVoiceRecordingDuration = Duration(seconds: 20);
+  static const List<Tool> _guidanceTools = [
+    Tool(
+      name: 'set_urgency_level',
+      description:
+          'Tetapkan level urgensi kasus saat ini agar UI SIGAP sinkron dengan triase.',
+      parameters: {
+        'type': 'object',
+        'properties': {
+          'level': {
+            'type': 'string',
+            'enum': ['green', 'yellow', 'red'],
+          },
+          'reason': {'type': 'string'},
+        },
+        'required': ['level'],
+      },
+    ),
+    Tool(
+      name: 'trigger_emergency',
+      description:
+          'Gunakan saat kondisi perlu diarahkan segera ke bantuan darurat atau kontak darurat.',
+      parameters: {
+        'type': 'object',
+        'properties': {
+          'reason': {'type': 'string'},
+        },
+        'required': ['reason'],
+      },
+    ),
+    Tool(
+      name: 'correct_myth',
+      description:
+          'Gunakan saat user menyebut mitos P3K berbahaya dan perlu dikoreksi eksplisit.',
+      parameters: {
+        'type': 'object',
+        'properties': {
+          'myth': {'type': 'string'},
+          'correction': {'type': 'string'},
+        },
+        'required': ['myth', 'correction'],
+      },
+    ),
+  ];
 
   AssistantViewModel({
     required String inputMode,
@@ -776,13 +820,30 @@ class AssistantViewModel extends ChangeNotifier {
             request.hasPhotoAttachmentWithoutVision,
         includeAudioContext: request.includeAudioContext,
       );
-      await for (final token in _streamResponseForRequest(request, prompt)) {
-        buffer.write(token);
+      final canUseFunctionCalling =
+          !request.usesImageInference && !request.usesAudioInference;
+      if (canUseFunctionCalling) {
+        final functionCallingText =
+            await _gemmaService.generateResponseWithFunctionCalls(
+              prompt: prompt,
+              tools: _guidanceTools,
+              onFunctionCall: _executeGuidanceTool,
+            );
+        buffer.write(functionCallingText);
         _replaceAssistantMessageAt(
           assistantMessageIndex,
           _cleanDisplayText(buffer.toString()),
         );
         _notifySafely();
+      } else {
+        await for (final token in _streamResponseForRequest(request, prompt)) {
+          buffer.write(token);
+          _replaceAssistantMessageAt(
+            assistantMessageIndex,
+            _cleanDisplayText(buffer.toString()),
+          );
+          _notifySafely();
+        }
       }
       if (request.usesImageInference) {
         _visionState = AssistantVisionState.enabled;
@@ -1048,6 +1109,7 @@ QUESTIONS:
 Buat 3 sampai 5 langkah. Jika kondisi tampak berat, pilih YELLOW atau RED.
 Jika ini berpotensi gawat darurat, arahkan untuk mencari bantuan medis segera.
 Gunakan konteks RAG lokal bila relevan, dan jangan mengarang fakta di luar konteks itu untuk klaim P3K spesifik.
+Jika tool tersedia, gunakan tool untuk sinkronkan urgensi, tandai situasi darurat, dan koreksi mitos yang jelas sebelum memberi respons akhir.
 Input mode user saat ini: $_inputMode
 Konteks RAG lokal SIGAP:
 $contextBlock
@@ -1055,6 +1117,61 @@ Konteks multimodal:
 $modalityBlock
 Laporan user: $userInput
 ''';
+  }
+
+  Future<Map<String, dynamic>> _executeGuidanceTool(
+    FunctionCallResponse functionCall,
+  ) async {
+    switch (functionCall.name) {
+      case 'set_urgency_level':
+        final rawLevel = '${functionCall.args['level'] ?? ''}'.toLowerCase();
+        final reason = '${functionCall.args['reason'] ?? ''}'.trim();
+        final nextUrgency = switch (rawLevel) {
+          'red' => UrgencyLevel.red,
+          'yellow' => UrgencyLevel.yellow,
+          _ => UrgencyLevel.green,
+        };
+        _urgency = nextUrgency;
+        if (reason.isNotEmpty) {
+          _serviceStatus = 'Urgensi diperbarui: ${nextUrgency.label}. $reason';
+        }
+        _notifySafely();
+        return {
+          'status': 'success',
+          'level': rawLevel,
+          'message': 'Urgency level updated to ${nextUrgency.label}.',
+        };
+      case 'trigger_emergency':
+        final reason = '${functionCall.args['reason'] ?? ''}'.trim();
+        _urgency = UrgencyLevel.red;
+        _serviceStatus = reason.isEmpty
+            ? 'SIGAP menandai kondisi ini sebagai darurat dan menyarankan bantuan segera.'
+            : 'SIGAP menandai kondisi ini sebagai darurat: $reason';
+        _notifySafely();
+        return {
+          'status': 'success',
+          'message': _serviceStatus,
+        };
+      case 'correct_myth':
+        final myth = '${functionCall.args['myth'] ?? ''}'.trim();
+        final correction = '${functionCall.args['correction'] ?? ''}'.trim();
+        final message = correction.isEmpty
+            ? 'Tidak ada koreksi mitos yang diberikan.'
+            : 'Mitos "$myth" dikoreksi menjadi: $correction';
+        _serviceStatus = message;
+        _notifySafely();
+        return {
+          'status': 'success',
+          'message': message,
+          'myth': myth,
+          'correction': correction,
+        };
+      default:
+        return {
+          'status': 'ignored',
+          'message': 'Tool ${functionCall.name} belum didukung SIGAP.',
+        };
+    }
   }
 
   AssistantGuidance _buildStructuredGuidance({

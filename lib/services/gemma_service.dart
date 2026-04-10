@@ -125,6 +125,7 @@ class GemmaService extends ChangeNotifier {
   bool _modelSupportsAudio = false;
   bool _chatSupportsImage = false;
   bool _chatSupportsAudio = false;
+  bool _chatSupportsFunctionCalls = false;
   PreferredBackend? _activeBackend;
   PreferredBackend? _lastInferenceBackend;
   bool _lastInferenceUsedVision = false;
@@ -575,6 +576,67 @@ class GemmaService extends ChangeNotifier {
     );
   }
 
+  Future<String> generateResponseWithFunctionCalls({
+    required String prompt,
+    required List<Tool> tools,
+    required Future<Map<String, dynamic>> Function(FunctionCallResponse call)
+    onFunctionCall,
+    ToolChoice toolChoice = ToolChoice.auto,
+  }) async {
+    if (!isReady) {
+      throw StateError(_statusMessage);
+    }
+
+    final chat = await _ensureChat(
+      supportsFunctionCalls: true,
+      tools: tools,
+      toolChoice: toolChoice,
+    );
+    _lastInferenceBackend = _activeBackend;
+    _lastInferenceUsedVision = false;
+    _lastInferenceUsedAudio = false;
+    _lastVisionRetriedToCpu = false;
+
+    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+
+    for (var iteration = 0; iteration < 4; iteration++) {
+      final response = await chat.generateChatResponse();
+      if (response is TextResponse) {
+        _lastInferenceDebugLabel =
+            'Respons function-calling berhasil dengan backend ${_backendLabel(_activeBackend)}.';
+        return response.token;
+      }
+
+      if (response is FunctionCallResponse) {
+        final toolResponse = await onFunctionCall(response);
+        await chat.addQuery(
+          Message.toolResponse(
+            toolName: response.name,
+            response: toolResponse,
+          ),
+        );
+        continue;
+      }
+
+      if (response is ParallelFunctionCallResponse) {
+        for (final call in response.calls) {
+          final toolResponse = await onFunctionCall(call);
+          await chat.addQuery(
+            Message.toolResponse(
+              toolName: call.name,
+              response: toolResponse,
+            ),
+          );
+        }
+        continue;
+      }
+    }
+
+    throw StateError(
+      'Model tidak memberikan respons teks final setelah function calling.',
+    );
+  }
+
   Stream<String> _generateResponseForMessage(
     Message message, {
     bool supportImage = false,
@@ -627,6 +689,7 @@ class GemmaService extends ChangeNotifier {
     _chat = null;
     _chatSupportsImage = false;
     _chatSupportsAudio = false;
+    _chatSupportsFunctionCalls = false;
   }
 
   Future<void> reset() async {
@@ -894,6 +957,9 @@ class GemmaService extends ChangeNotifier {
     bool supportImage = false,
     bool supportAudio = false,
     PreferredBackend? preferredBackend,
+    bool supportsFunctionCalls = false,
+    List<Tool> tools = const [],
+    ToolChoice toolChoice = ToolChoice.auto,
   }) async {
     final needsModelReconfiguration =
         _model == null ||
@@ -911,7 +977,8 @@ class GemmaService extends ChangeNotifier {
     final canReuseExistingChat =
         _chat != null &&
         (!supportImage || _chatSupportsImage) &&
-        (!supportAudio || _chatSupportsAudio);
+        (!supportAudio || _chatSupportsAudio) &&
+        _chatSupportsFunctionCalls == supportsFunctionCalls;
     if (canReuseExistingChat) {
       return _chat!;
     }
@@ -930,13 +997,16 @@ class GemmaService extends ChangeNotifier {
 
     _chat = await model.createChat(
       modelType: ModelType.gemmaIt,
-      supportsFunctionCalls: false,
+      supportsFunctionCalls: supportsFunctionCalls,
       isThinking: false,
       supportImage: supportImage,
       supportAudio: supportAudio,
+      tools: tools,
+      toolChoice: toolChoice,
     );
     _chatSupportsImage = supportImage;
     _chatSupportsAudio = supportAudio;
+    _chatSupportsFunctionCalls = supportsFunctionCalls;
     return _chat!;
   }
 
@@ -949,6 +1019,7 @@ class GemmaService extends ChangeNotifier {
     _modelSupportsAudio = false;
     _chatSupportsImage = false;
     _chatSupportsAudio = false;
+    _chatSupportsFunctionCalls = false;
     if (_model != null) {
       await _model!.close();
       _model = null;
