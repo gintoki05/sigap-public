@@ -19,10 +19,7 @@ import '../services/rag_service.dart';
 import '../services/tts_service.dart';
 
 class AssistantGuidanceStep {
-  const AssistantGuidanceStep({
-    required this.title,
-    required this.details,
-  });
+  const AssistantGuidanceStep({required this.title, required this.details});
 
   final String title;
   final String details;
@@ -83,10 +80,7 @@ class AssistantMessage {
 }
 
 class AssistantPhotoAttachment {
-  const AssistantPhotoAttachment({
-    required this.name,
-    required this.bytes,
-  });
+  const AssistantPhotoAttachment({required this.name, required this.bytes});
 
   final String name;
   final Uint8List bytes;
@@ -194,11 +188,11 @@ class AssistantViewModel extends ChangeNotifier {
     Connectivity? connectivity,
     RagService? ragService,
     TtsService? ttsService,
-  })  : _inputMode = inputMode,
-        _gemmaService = gemmaService ?? GemmaService(),
-        _ragService = ragService ?? RagService(),
-        _ttsService = ttsService ?? TtsService(),
-        _connectivity = connectivity ?? Connectivity() {
+  }) : _inputMode = inputMode,
+       _gemmaService = gemmaService ?? GemmaService(),
+       _ragService = ragService ?? RagService(),
+       _ttsService = ttsService ?? TtsService(),
+       _connectivity = connectivity ?? Connectivity() {
     _serviceStatus = _gemmaService.statusMessage;
   }
 
@@ -224,6 +218,8 @@ class AssistantViewModel extends ChangeNotifier {
   bool _isSendingEmergency = false;
   bool _isRecordingVoice = false;
   bool _isVisionBetaEnabled = false;
+  bool _isStoppingGeneration = false;
+  bool _stopGenerationRequested = false;
   Duration _voiceRecordingDuration = Duration.zero;
   Timer? _voiceRecordingTimer;
   String? _voiceRecordingPath;
@@ -271,6 +267,8 @@ class AssistantViewModel extends ChangeNotifier {
   Duration? get downloadEta => _gemmaService.downloadEta;
   bool get isImportingLocalModel => _isImportingLocalModel;
   bool get isSendingEmergency => _isSendingEmergency;
+  bool get isGeneratingResponse => _isSendingMessage;
+  bool get isStoppingGeneration => _isStoppingGeneration;
   bool get isRecordingVoice => _isRecordingVoice;
   Duration get voiceRecordingDuration => _voiceRecordingDuration;
   bool get hasEmergencyContact =>
@@ -295,8 +293,9 @@ class AssistantViewModel extends ChangeNotifier {
 
   Future<void> initialize() async {
     _gemmaService.addListener(_handleServiceUpdate);
-    _connectivitySubscription =
-        _connectivity.onConnectivityChanged.listen(_updateConnectivityState);
+    _connectivitySubscription = _connectivity.onConnectivityChanged.listen(
+      _updateConnectivityState,
+    );
     await _refreshConnectivityState();
     await _loadEmergencyContact();
     await _loadVisionBetaPreference();
@@ -629,10 +628,7 @@ class AssistantViewModel extends ChangeNotifier {
       }
 
       final imageBytes = await pickedFile.readAsBytes();
-      return AssistantPhotoAttachment(
-        name: pickedFile.name,
-        bytes: imageBytes,
-      );
+      return AssistantPhotoAttachment(name: pickedFile.name, bytes: imageBytes);
     } catch (error) {
       _serviceStatus = 'Gagal mengambil foto kondisi: $error';
       _notifySafely();
@@ -741,6 +737,27 @@ class AssistantViewModel extends ChangeNotifier {
     );
   }
 
+  Future<void> stopGeneratingResponse() async {
+    if (!_isSendingMessage || _isStoppingGeneration) {
+      return;
+    }
+
+    _stopGenerationRequested = true;
+    _isStoppingGeneration = true;
+    _serviceStatus = 'Menghentikan generasi respons...';
+    _notifySafely();
+
+    try {
+      await _gemmaService.stopActiveGeneration();
+    } catch (error) {
+      _serviceStatus = 'Gagal menghentikan generasi respons: $error';
+      _stopGenerationRequested = false;
+    } finally {
+      _isStoppingGeneration = false;
+      _notifySafely();
+    }
+  }
+
   Future<void> _sendGuidanceRequest({
     required String userMessage,
     required String fallbackInput,
@@ -796,6 +813,9 @@ class AssistantViewModel extends ChangeNotifier {
     AssistantGuidanceRequest request, {
     required int assistantMessageIndex,
   }) async {
+    _stopGenerationRequested = false;
+    _isStoppingGeneration = false;
+
     if (!_gemmaService.isReady) {
       await _gemmaService.initializeReadyModel();
     }
@@ -830,6 +850,16 @@ class AssistantViewModel extends ChangeNotifier {
         );
         _notifySafely();
       }
+      if (_stopGenerationRequested) {
+        final partialText = _cleanDisplayText(buffer.toString()).trim();
+        final stoppedText = partialText.isEmpty
+            ? 'Generasi dihentikan sebelum respons selesai.'
+            : '$partialText\n\n[Generasi dihentikan]';
+        _replaceAssistantMessageAt(assistantMessageIndex, stoppedText);
+        _serviceStatus = 'Generasi respons dihentikan.';
+        await _gemmaService.resetConversation();
+        return;
+      }
       if (request.usesImageInference) {
         _visionState = AssistantVisionState.enabled;
       }
@@ -854,6 +884,16 @@ class AssistantViewModel extends ChangeNotifier {
       _serviceStatus = _gemmaService.statusMessage;
       await _handleGuidanceSpeech(guidance);
     } catch (error) {
+      if (_stopGenerationRequested) {
+        final partialText = _cleanDisplayText(buffer.toString()).trim();
+        final stoppedText = partialText.isEmpty
+            ? 'Generasi dihentikan sebelum respons selesai.'
+            : '$partialText\n\n[Generasi dihentikan]';
+        _replaceAssistantMessageAt(assistantMessageIndex, stoppedText);
+        _serviceStatus = 'Generasi respons dihentikan.';
+        await _gemmaService.resetConversation();
+        return;
+      }
       if (request.usesImageInference) {
         await _fallbackToTextAfterVisionFailure(
           request,
@@ -874,6 +914,8 @@ class AssistantViewModel extends ChangeNotifier {
       _serviceStatus = message;
     } finally {
       _isSendingMessage = false;
+      _isStoppingGeneration = false;
+      _stopGenerationRequested = false;
       _notifySafely();
     }
   }
@@ -913,25 +955,15 @@ class AssistantViewModel extends ChangeNotifier {
       final whatsappUri = Uri(
         scheme: 'whatsapp',
         host: 'send',
-        queryParameters: {
-          'phone': phoneDigits,
-          'text': message,
-        },
+        queryParameters: {'phone': phoneDigits, 'text': message},
       );
-      final fallbackUri = Uri.https(
-        'wa.me',
-        '/$phoneDigits',
-        {'text': message},
-      );
+      final fallbackUri = Uri.https('wa.me', '/$phoneDigits', {
+        'text': message,
+      });
 
-      final launched = await launchUrl(
-            whatsappUri,
-            mode: LaunchMode.externalApplication,
-          ) ||
-          await launchUrl(
-            fallbackUri,
-            mode: LaunchMode.externalApplication,
-          );
+      final launched =
+          await launchUrl(whatsappUri, mode: LaunchMode.externalApplication) ||
+          await launchUrl(fallbackUri, mode: LaunchMode.externalApplication);
 
       if (!launched) {
         return const EmergencyLaunchResult(
@@ -951,10 +983,7 @@ class AssistantViewModel extends ChangeNotifier {
         message: 'Layanan lokasi sedang nonaktif. Nyalakan GPS lalu coba lagi.',
       );
     } on PermissionDeniedException catch (error) {
-      return EmergencyLaunchResult(
-        isSuccess: false,
-        message: error.message,
-      );
+      return EmergencyLaunchResult(isSuccess: false, message: error.message);
     } catch (error) {
       return EmergencyLaunchResult(
         isSuccess: false,
@@ -1133,10 +1162,7 @@ Laporan user: $userInput
             ? 'SIGAP menandai kondisi ini sebagai darurat dan menyarankan bantuan segera.'
             : 'SIGAP menandai kondisi ini sebagai darurat: $reason';
         _notifySafely();
-        return {
-          'status': 'success',
-          'message': _serviceStatus,
-        };
+        return {'status': 'success', 'message': _serviceStatus};
       case 'correct_myth':
         final myth = '${functionCall.args['myth'] ?? ''}'.trim();
         final correction = '${functionCall.args['correction'] ?? ''}'.trim();
@@ -1165,9 +1191,11 @@ Laporan user: $userInput
   }) {
     final cleanedRaw = _cleanDisplayText(rawText);
     final urgency = _parseUrgency(cleanedRaw, fallbackInput);
-    final summary = _extractSingleLine(cleanedRaw, 'SUMMARY') ??
+    final summary =
+        _extractSingleLine(cleanedRaw, 'SUMMARY') ??
         _buildFallbackSummary(cleanedRaw, fallbackInput);
-    final warning = _extractSingleLine(cleanedRaw, 'WARNING') ??
+    final warning =
+        _extractSingleLine(cleanedRaw, 'WARNING') ??
         _buildFallbackWarning(urgency, fallbackInput);
     final steps = _extractSteps(cleanedRaw, fallbackInput, urgency);
     final followUpQuestions = _extractQuestions(cleanedRaw, fallbackInput);
@@ -1291,10 +1319,9 @@ Laporan user: $userInput
     return [
       AssistantGuidanceStep(
         title: 'Amankan kondisi',
-        details:
-            urgency == UrgencyLevel.red
-                ? 'Segera minta bantuan orang sekitar dan hubungi layanan darurat bila kondisi memburuk atau korban tidak responsif.'
-                : 'Pastikan area aman dan jauhkan korban dari penyebab cedera.',
+        details: urgency == UrgencyLevel.red
+            ? 'Segera minta bantuan orang sekitar dan hubungi layanan darurat bila kondisi memburuk atau korban tidak responsif.'
+            : 'Pastikan area aman dan jauhkan korban dari penyebab cedera.',
       ),
       const AssistantGuidanceStep(
         title: 'Nilai gejala utama',
@@ -1389,10 +1416,7 @@ Laporan user: $userInput
     return text
         .replaceAll('**', '')
         .replaceAll('* ', '')
-        .replaceAllMapped(
-          RegExp(r'\n{3,}'),
-          (_) => '\n\n',
-        )
+        .replaceAllMapped(RegExp(r'\n{3,}'), (_) => '\n\n')
         .trim();
   }
 
@@ -1443,7 +1467,10 @@ Laporan user: $userInput
     );
     _notifySafely();
 
-    final ragContext = await _ragService.query(fallbackRequest.ragQuery, limit: 3);
+    final ragContext = await _ragService.query(
+      fallbackRequest.ragQuery,
+      limit: 3,
+    );
     final fallbackPrompt = _buildActiveGuidancePrompt(
       userInput: fallbackRequest.fallbackInput,
       ragContext: ragContext,
@@ -1525,7 +1552,8 @@ Laporan user: $userInput
         )
         .text;
 
-    final guidanceSummary = latestGuidance?.summary ??
+    final guidanceSummary =
+        latestGuidance?.summary ??
         'Butuh bantuan segera. Mohon cek kondisi korban secepatnya.';
     final urgencyLabel = latestGuidance?.urgency.label ?? 'Panggil Bantuan';
     final mapsLink =
@@ -1540,7 +1568,8 @@ Ringkasan kondisi: $guidanceSummary
 Laporan singkat user: $latestUserMessage
 Lokasi GPS: ${position.latitude}, ${position.longitude}
 Buka peta: $mapsLink
-'''.trim();
+'''
+        .trim();
   }
 
   String _sanitizeWhatsAppPhone(String rawPhone) {
@@ -1592,9 +1621,7 @@ Buka peta: $mapsLink
     for (var index = 0; index < guidance.steps.length; index++) {
       final step = guidance.steps[index];
       buffer.writeln();
-      buffer.writeln(
-        'Langkah ${index + 1}. ${step.title}. ${step.details}',
-      );
+      buffer.writeln('Langkah ${index + 1}. ${step.title}. ${step.details}');
     }
 
     return buffer.toString().trim();
@@ -1616,6 +1643,7 @@ Buka peta: $mapsLink
     _connectivitySubscription?.cancel();
     _voiceRecordingTimer?.cancel();
     _gemmaService.removeListener(_handleServiceUpdate);
+    unawaited(_gemmaService.stopActiveGeneration());
     unawaited(_ttsService.stop());
     unawaited(_audioRecorder.dispose());
     super.dispose();

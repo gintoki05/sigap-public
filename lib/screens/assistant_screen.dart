@@ -177,10 +177,13 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                 child: _BottomInputBar(
                   controller: _controller,
                   onSend: () => _sendMessage(viewModel),
+                  onStopGenerating: viewModel.stopGeneratingResponse,
                   onVoice: viewModel.startVoice,
                   onPhoto: () => _pickPhoto(viewModel),
                   onEmergency: () => _sendEmergency(context, viewModel),
                   isBusy: viewModel.isSendingEmergency,
+                  isGenerating: viewModel.isGeneratingResponse,
+                  isStoppingGeneration: viewModel.isStoppingGeneration,
                   emergencyContactName: viewModel.emergencyContactName,
                   emergencyContactPhone: viewModel.emergencyContactPhone,
                   onEditEmergencyContact: () =>
@@ -2142,10 +2145,13 @@ class _FollowUpQuestion extends StatelessWidget {
 class _BottomInputBar extends StatelessWidget {
   final TextEditingController controller;
   final Future<void> Function() onSend;
+  final Future<void> Function() onStopGenerating;
   final Future<void> Function() onVoice;
   final Future<void> Function() onPhoto;
   final Future<void> Function() onEmergency;
   final bool isBusy;
+  final bool isGenerating;
+  final bool isStoppingGeneration;
   final String? emergencyContactName;
   final String? emergencyContactPhone;
   final Future<bool?> Function() onEditEmergencyContact;
@@ -2158,10 +2164,13 @@ class _BottomInputBar extends StatelessWidget {
   const _BottomInputBar({
     required this.controller,
     required this.onSend,
+    required this.onStopGenerating,
     required this.onVoice,
     required this.onPhoto,
     required this.onEmergency,
     required this.isBusy,
+    required this.isGenerating,
+    required this.isStoppingGeneration,
     required this.emergencyContactName,
     required this.emergencyContactPhone,
     required this.onEditEmergencyContact,
@@ -2399,8 +2408,31 @@ class _BottomInputBar extends StatelessWidget {
                   ),
                 ),
                 IconButton(
-                  onPressed: () async => onSend(),
-                  icon: const Icon(Icons.send, color: AppColors.navy),
+                  onPressed: () async {
+                    if (isGenerating) {
+                      await onStopGenerating();
+                      return;
+                    }
+                    await onSend();
+                  },
+                  tooltip: isGenerating
+                      ? (isStoppingGeneration
+                            ? 'Sedang menghentikan'
+                            : 'Stop generate')
+                      : 'Kirim pesan',
+                  icon: isStoppingGeneration
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.red,
+                          ),
+                        )
+                      : Icon(
+                          isGenerating ? Icons.stop_circle : Icons.send,
+                          color: isGenerating ? AppColors.red : AppColors.navy,
+                        ),
                 ),
               ],
             ),

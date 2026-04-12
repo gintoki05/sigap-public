@@ -1,5 +1,9 @@
 import 'dart:io';
 
+void _log(String message) {
+  stderr.writeln(message);
+}
+
 void main() async {
   var file = File(
     r'c:\Users\ajiep\Documents\Developments\Ajie\sigap\lib\screens\assistant_screen.dart',
@@ -12,7 +16,7 @@ void main() async {
         lines[lines.indexOf(l) + 2].contains("child: InkWell("),
   );
   if (startIndex == -1) {
-    print("Could not find start index");
+    _log('Could not find start index');
     return;
   }
 
@@ -39,11 +43,11 @@ void main() async {
   }
 
   if (endIndex == -1) {
-    print("Could not find end index");
+    _log('Could not find end index');
     return;
   }
 
-  print("Start Index: \$startIndex, End Index: \$endIndex");
+  _log('Start Index: $startIndex, End Index: $endIndex');
 
   var block = lines.sublist(startIndex, endIndex + 1);
   lines.removeRange(startIndex, endIndex + 1);
@@ -53,7 +57,7 @@ void main() async {
     lines.indexWhere((l) => l.contains('return SingleChildScrollView(')),
   );
   if (insertIndex == -1) {
-    print("Could not find insert index");
+    _log('Could not find insert index');
     return;
   }
 
@@ -62,5 +66,5 @@ void main() async {
   lines.insertAll(insertIndex, block);
 
   await file.writeAsString(lines.join('\n'));
-  print("Success");
+  _log('Success');
 }

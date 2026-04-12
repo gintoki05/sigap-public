@@ -101,11 +101,15 @@ class GemmaService extends ChangeNotifier {
     SigapModelVariant.e2b,
     SigapModelVariant.e4b,
   ];
-  static const String configuredModelPath =
-      String.fromEnvironment(modelPathEnvKey);
-  static const String configuredModelUrl = String.fromEnvironment(modelUrlEnvKey);
-  static const String configuredModelAuthToken =
-      String.fromEnvironment(modelAuthTokenEnvKey);
+  static const String configuredModelPath = String.fromEnvironment(
+    modelPathEnvKey,
+  );
+  static const String configuredModelUrl = String.fromEnvironment(
+    modelUrlEnvKey,
+  );
+  static const String configuredModelAuthToken = String.fromEnvironment(
+    modelAuthTokenEnvKey,
+  );
 
   factory GemmaService() => _instance;
 
@@ -184,10 +188,9 @@ class GemmaService extends ChangeNotifier {
       configuredModelPath.trim().isEmpty &&
       (_importedModelPaths[_selectedVariant]?.trim().isNotEmpty ?? false);
 
-  String get effectiveModelUrl =>
-      configuredModelUrl.trim().isNotEmpty
-          ? configuredModelUrl.trim()
-          : _selectedVariant.defaultUrl;
+  String get effectiveModelUrl => configuredModelUrl.trim().isNotEmpty
+      ? configuredModelUrl.trim()
+      : _selectedVariant.defaultUrl;
 
   Future<void> initialize() async {
     await initializeReadyModel();
@@ -497,6 +500,15 @@ class GemmaService extends ChangeNotifier {
     );
   }
 
+  Future<void> stopActiveGeneration() async {
+    final chat = _chat;
+    if (chat == null) {
+      return;
+    }
+
+    await chat.stopGeneration();
+  }
+
   Stream<String> generateResponseWithImage({
     required String prompt,
     required Uint8List imageBytes,
@@ -567,11 +579,7 @@ class GemmaService extends ChangeNotifier {
     }
 
     yield* _generateResponseForMessage(
-      Message.withAudio(
-        text: prompt,
-        audioBytes: audioBytes,
-        isUser: true,
-      ),
+      Message.withAudio(text: prompt, audioBytes: audioBytes, isUser: true),
       supportAudio: true,
     );
   }
@@ -610,10 +618,7 @@ class GemmaService extends ChangeNotifier {
       if (response is FunctionCallResponse) {
         final toolResponse = await onFunctionCall(response);
         await chat.addQuery(
-          Message.toolResponse(
-            toolName: response.name,
-            response: toolResponse,
-          ),
+          Message.toolResponse(toolName: response.name, response: toolResponse),
         );
         continue;
       }
@@ -622,10 +627,7 @@ class GemmaService extends ChangeNotifier {
         for (final call in response.calls) {
           final toolResponse = await onFunctionCall(call);
           await chat.addQuery(
-            Message.toolResponse(
-              toolName: call.name,
-              response: toolResponse,
-            ),
+            Message.toolResponse(toolName: call.name, response: toolResponse),
           );
         }
         continue;
@@ -671,6 +673,11 @@ class GemmaService extends ChangeNotifier {
           ? 'Input suara beta berhasil dengan backend ${_backendLabel(_activeBackend)}.'
           : 'Respons teks berhasil dengan backend ${_backendLabel(_activeBackend)}.';
     } catch (error) {
+      if (_isCancelledGenerationError(error)) {
+        _lastInferenceDebugLabel = 'Generasi dihentikan oleh user.';
+        return;
+      }
+
       _setState(
         GemmaServiceState.error,
         'Gagal menghasilkan respons ${_selectedVariant.label}: $error',
@@ -690,6 +697,14 @@ class GemmaService extends ChangeNotifier {
     _chatSupportsImage = false;
     _chatSupportsAudio = false;
     _chatSupportsFunctionCalls = false;
+  }
+
+  bool _isCancelledGenerationError(Object error) {
+    final normalized = error.toString().toLowerCase();
+    return normalized.contains('cancellationexception') ||
+        normalized.contains('session is cancelled') ||
+        normalized.contains('cancelled during prefill') ||
+        normalized.contains('cancelled');
   }
 
   Future<void> reset() async {
@@ -790,9 +805,7 @@ class GemmaService extends ChangeNotifier {
     }
 
     final supportDirectory = await getApplicationSupportDirectory();
-    final modelsDirectory = Directory(
-      p.join(supportDirectory.path, 'models'),
-    );
+    final modelsDirectory = Directory(p.join(supportDirectory.path, 'models'));
     if (!modelsDirectory.existsSync()) {
       await modelsDirectory.create(recursive: true);
     }
@@ -855,13 +868,14 @@ class GemmaService extends ChangeNotifier {
     final trimmedUrl = effectiveModelUrl;
     final trimmedToken = configuredModelAuthToken.trim();
     final cancelToken = _downloadCancelToken;
-    final builder = FlutterGemma.installModel(
-      modelType: ModelType.gemmaIt,
-      fileType: _detectFileType(trimmedUrl),
-    ).fromNetwork(
-      trimmedUrl,
-      token: trimmedToken.isEmpty ? null : trimmedToken,
-    );
+    final builder =
+        FlutterGemma.installModel(
+          modelType: ModelType.gemmaIt,
+          fileType: _detectFileType(trimmedUrl),
+        ).fromNetwork(
+          trimmedUrl,
+          token: trimmedToken.isEmpty ? null : trimmedToken,
+        );
 
     if (cancelToken != null) {
       builder.withCancelToken(cancelToken);
@@ -1094,7 +1108,8 @@ class GemmaService extends ChangeNotifier {
     String newStatus, {
     int? progress,
   }) {
-    final didChange = _state != newState ||
+    final didChange =
+        _state != newState ||
         _statusMessage != newStatus ||
         (progress != null && _downloadProgress != progress);
 
