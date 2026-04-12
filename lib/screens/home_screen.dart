@@ -1,4 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:geolocator/geolocator.dart';
 import '../core/constants.dart';
 import 'assistant_screen.dart';
 import 'education_screen.dart';
@@ -103,8 +106,66 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-class _HomeTab extends StatelessWidget {
+class _HomeTab extends StatefulWidget {
   const _HomeTab();
+
+  @override
+  State<_HomeTab> createState() => _HomeTabState();
+}
+
+class _HomeTabState extends State<_HomeTab> {
+  // --- Connectivity ---
+  bool _isOnline = false;
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySub;
+
+  // --- GPS ---
+  bool _gpsActive = false;
+  StreamSubscription<ServiceStatus>? _locationServiceSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _initConnectivity();
+    _initGps();
+  }
+
+  Future<void> _initConnectivity() async {
+    final results = await Connectivity().checkConnectivity();
+    _updateConnectivity(results);
+    _connectivitySub = Connectivity()
+        .onConnectivityChanged
+        .listen(_updateConnectivity);
+  }
+
+  void _updateConnectivity(List<ConnectivityResult> results) {
+    final online = results.any((r) =>
+        r == ConnectivityResult.mobile ||
+        r == ConnectivityResult.wifi ||
+        r == ConnectivityResult.ethernet);
+    if (mounted) setState(() => _isOnline = online);
+  }
+
+  Future<void> _initGps() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    final permission = await Geolocator.checkPermission();
+    final granted = permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse;
+    if (mounted) setState(() => _gpsActive = serviceEnabled && granted);
+
+    // Listen to location service on/off changes
+    _locationServiceSub = Geolocator.getServiceStatusStream().listen((status) {
+      if (mounted) {
+        setState(() => _gpsActive = status == ServiceStatus.enabled);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connectivitySub.cancel();
+    _locationServiceSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -140,19 +201,25 @@ class _HomeTab extends StatelessWidget {
                     ),
                   ],
                 ),
-                // Status badges
+                // Status badges — dinamis
                 Row(
-                  children: const [
+                  children: [
                     _StatusBadge(
-                      icon: Icons.location_on,
+                      icon: _gpsActive
+                          ? Icons.location_on
+                          : Icons.location_off,
                       label: 'GPS',
-                      color: Color(0xFF4A90D9),
+                      color: _gpsActive
+                          ? const Color(0xFF2ECC71)
+                          : const Color(0xFFAAAAAA),
                     ),
-                    SizedBox(width: 6),
+                    const SizedBox(width: 6),
                     _StatusBadge(
-                      icon: Icons.wifi_off,
-                      label: 'OFFLINE',
-                      color: Color(0xFF4A90D9),
+                      icon: _isOnline ? Icons.wifi : Icons.wifi_off,
+                      label: _isOnline ? 'ONLINE' : 'OFFLINE',
+                      color: _isOnline
+                          ? const Color(0xFF2ECC71)
+                          : const Color(0xFF4A90D9),
                     ),
                   ],
                 ),
