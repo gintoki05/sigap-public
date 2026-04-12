@@ -8,27 +8,35 @@ import '../viewmodels/assistant_view_model.dart';
 class AssistantScreen extends StatelessWidget {
   final String initialInputMode;
   final String? initialQuery;
+  final int launchRequestToken;
 
   const AssistantScreen({
     super.key,
     this.initialInputMode = 'chat',
     this.initialQuery,
+    this.launchRequestToken = 0,
   });
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) =>
-          AssistantViewModel(inputMode: initialInputMode)..initialize(),
-      child: _AssistantScreenBody(initialQuery: initialQuery),
+    return _AssistantScreenBody(
+      initialQuery: initialQuery,
+      initialInputMode: initialInputMode,
+      launchRequestToken: launchRequestToken,
     );
   }
 }
 
 class _AssistantScreenBody extends StatefulWidget {
-  const _AssistantScreenBody({this.initialQuery});
+  const _AssistantScreenBody({
+    this.initialQuery,
+    required this.initialInputMode,
+    required this.launchRequestToken,
+  });
 
   final String? initialQuery;
+  final String initialInputMode;
+  final int launchRequestToken;
 
   @override
   State<_AssistantScreenBody> createState() => _AssistantScreenBodyState();
@@ -59,6 +67,22 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
       text: widget.initialQuery?.trim() ?? '',
     );
     _ensureMessagesScrollController();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    context.read<AssistantViewModel>().setInputMode(widget.initialInputMode);
+  }
+
+  @override
+  void didUpdateWidget(covariant _AssistantScreenBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.launchRequestToken != widget.launchRequestToken) {
+      context.read<AssistantViewModel>().setInputMode(widget.initialInputMode);
+      _hasAutoStartedVoice = false;
+      _hasAutoOpenedPhoto = false;
+    }
   }
 
   @override
@@ -224,7 +248,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     final shouldAutoStart =
         !_hasAutoStartedVoice &&
         widget.initialQuery == null &&
-        viewModel.inputMode == 'voice' &&
+        widget.initialInputMode == 'voice' &&
         viewModel.isModelReady &&
         !viewModel.isBusy &&
         !viewModel.isRecordingVoice &&
@@ -247,7 +271,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     final shouldAutoOpenPhoto =
         !_hasAutoOpenedPhoto &&
         widget.initialQuery == null &&
-        viewModel.inputMode == 'photo' &&
+        widget.initialInputMode == 'photo' &&
         viewModel.isModelReady &&
         !viewModel.isBusy &&
         !viewModel.isRecordingVoice &&

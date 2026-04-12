@@ -2,9 +2,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:provider/provider.dart';
 import '../core/constants.dart';
 import 'assistant_screen.dart';
 import 'education_screen.dart';
+import '../viewmodels/assistant_view_model.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -15,53 +17,94 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
+  final AssistantViewModel _assistantViewModel = AssistantViewModel(
+    inputMode: 'chat',
+  );
+  String _assistantInputMode = 'chat';
+  int _assistantLaunchToken = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _assistantViewModel.initialize();
+  }
+
+  @override
+  void dispose() {
+    _assistantViewModel.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFEEF2F7),
-      body: IndexedStack(
-        index: _currentIndex,
-        children: const [
-          _HomeTab(),
-          AssistantScreen(),
-          EducationScreen(),
-        ],
-      ),
-      bottomNavigationBar: Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: Color(0xFFE0E0E0), width: 0.5)),
+    return ChangeNotifierProvider<AssistantViewModel>.value(
+      value: _assistantViewModel,
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        body: IndexedStack(
+          index: _currentIndex,
+          children: [
+            _HomeTab(onOpenAssistant: _openAssistant),
+            AssistantScreen(
+              initialInputMode: _assistantInputMode,
+              launchRequestToken: _assistantLaunchToken,
+            ),
+            const EducationScreen(),
+          ],
         ),
-        child: SafeArea(
-          child: SizedBox(
-            height: 60,
-            child: Row(
-              children: [
-                _NavItem(
-                  icon: Icons.home,
-                  label: 'HOME',
-                  selected: _currentIndex == 0,
-                  onTap: () => setState(() => _currentIndex = 0),
-                ),
-                _NavItem(
-                  icon: Icons.smart_toy_outlined,
-                  label: 'AI ASSISTANT',
-                  selected: _currentIndex == 1,
-                  onTap: () => setState(() => _currentIndex = 1),
-                ),
-                _NavItem(
-                  icon: Icons.school_outlined,
-                  label: 'EDUCATION',
-                  selected: _currentIndex == 2,
-                  onTap: () => setState(() => _currentIndex = 2),
-                ),
-              ],
+        bottomNavigationBar: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            border: Border(
+              top: BorderSide(color: Color(0xFFE0E0E0), width: 0.5),
+            ),
+          ),
+          child: SafeArea(
+            child: SizedBox(
+              height: 60,
+              child: Row(
+                children: [
+                  _NavItem(
+                    icon: Icons.home,
+                    label: 'HOME',
+                    selected: _currentIndex == 0,
+                    onTap: () => setState(() => _currentIndex = 0),
+                  ),
+                  _NavItem(
+                    icon: Icons.smart_toy_outlined,
+                    label: 'AI ASSISTANT',
+                    selected: _currentIndex == 1,
+                    onTap: () => setState(() => _currentIndex = 1),
+                  ),
+                  _NavItem(
+                    icon: Icons.school_outlined,
+                    label: 'EDUCATION',
+                    selected: _currentIndex == 2,
+                    onTap: () => setState(() => _currentIndex = 2),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  void _openAssistant({String inputMode = 'chat'}) {
+    final shouldStartFreshInput =
+        _assistantViewModel.messages.isEmpty &&
+        !_assistantViewModel.isGeneratingResponse &&
+        !_assistantViewModel.isRecordingVoice;
+
+    setState(() {
+      if (shouldStartFreshInput) {
+        _assistantInputMode = inputMode;
+        _assistantViewModel.setInputMode(inputMode);
+        _assistantLaunchToken++;
+      }
+      _currentIndex = 1;
+    });
   }
 }
 
@@ -107,7 +150,9 @@ class _NavItem extends StatelessWidget {
 }
 
 class _HomeTab extends StatefulWidget {
-  const _HomeTab();
+  const _HomeTab({required this.onOpenAssistant});
+
+  final void Function({String inputMode}) onOpenAssistant;
 
   @override
   State<_HomeTab> createState() => _HomeTabState();
@@ -121,10 +166,28 @@ class _HomeTabState extends State<_HomeTab> {
   // --- GPS ---
   bool _gpsActive = false;
   StreamSubscription<ServiceStatus>? _locationServiceSub;
+  double? _latitude;
+  double? _longitude;
+
+  // --- Date ---
+  String _formattedDate = '';
+
+  static const _dayNames = [
+    'Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'
+  ];
+  static const _monthNames = [
+    '', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+  ];
+
+  String _formatDate(DateTime d) {
+    return '${_dayNames[d.weekday % 7]}, ${d.day} ${_monthNames[d.month]} ${d.year}';
+  }
 
   @override
   void initState() {
     super.initState();
+    _formattedDate = _formatDate(DateTime.now());
     _initConnectivity();
     _initGps();
   }
@@ -152,12 +215,63 @@ class _HomeTabState extends State<_HomeTab> {
         permission == LocationPermission.whileInUse;
     if (mounted) setState(() => _gpsActive = serviceEnabled && granted);
 
-    // Listen to location service on/off changes
-    _locationServiceSub = Geolocator.getServiceStatusStream().listen((status) {
+    if (serviceEnabled && granted) {
+      await _refreshCoordinates();
+    }
+
+    _locationServiceSub = Geolocator.getServiceStatusStream().listen((status) async {
+      final isEnabled = status == ServiceStatus.enabled;
       if (mounted) {
-        setState(() => _gpsActive = status == ServiceStatus.enabled);
+        setState(() => _gpsActive = isEnabled);
+      }
+
+      if (isEnabled) {
+        await _refreshCoordinates();
+      } else if (mounted) {
+        setState(() {
+          _latitude = null;
+          _longitude = null;
+        });
       }
     });
+  }
+
+  Future<void> _refreshCoordinates() async {
+    final permission = await Geolocator.checkPermission();
+    final granted = permission == LocationPermission.always ||
+        permission == LocationPermission.whileInUse;
+    if (!granted) {
+      return;
+    }
+
+    try {
+      final lastKnown = await Geolocator.getLastKnownPosition();
+      if (lastKnown != null && mounted) {
+        setState(() {
+          _latitude = lastKnown.latitude;
+          _longitude = lastKnown.longitude;
+        });
+      }
+    } catch (_) {
+      // Abaikan fallback last known position jika belum tersedia.
+    }
+
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.reduced,
+          timeLimit: Duration(seconds: 8),
+        ),
+      );
+      if (mounted) {
+        setState(() {
+          _latitude = pos.latitude;
+          _longitude = pos.longitude;
+        });
+      }
+    } catch (_) {
+      // Jika posisi live belum didapat, biarkan last known position tetap tampil.
+    }
   }
 
   @override
@@ -170,224 +284,277 @@ class _HomeTabState extends State<_HomeTab> {
   @override
   Widget build(BuildContext context) {
     return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 16),
+      child: Column(
+        children: [
 
-            // Header
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                // Logo
-                Row(
-                  children: [
-                    const Text(
-                      '✳',
-                      style: TextStyle(fontSize: 20, color: AppColors.navy),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      'SIGAP',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.navy,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-                // Status badges — dinamis
-                Row(
-                  children: [
-                    _StatusBadge(
-                      icon: _gpsActive
-                          ? Icons.location_on
-                          : Icons.location_off,
-                      label: 'GPS',
-                      color: _gpsActive
-                          ? const Color(0xFF2ECC71)
-                          : const Color(0xFFAAAAAA),
-                    ),
-                    const SizedBox(width: 6),
-                    _StatusBadge(
-                      icon: _isOnline ? Icons.wifi : Icons.wifi_off,
-                      label: _isOnline ? 'ONLINE' : 'OFFLINE',
-                      color: _isOnline
-                          ? const Color(0xFF2ECC71)
-                          : const Color(0xFF4A90D9),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 28),
-
-            // Hero text
-            const Text(
-              'Butuh Bantuan\nSegera?',
-              style: TextStyle(
-                fontSize: 32,
-                fontWeight: FontWeight.bold,
-                color: AppColors.navy,
-                height: 1.2,
-              ),
-            ),
-            const SizedBox(height: 10),
-            const Text(
-              'Pilih metode bantuan tercepat untuk\nsituasi darurat Anda.',
-              style: TextStyle(
-                fontSize: 14,
-                color: AppColors.textGrey,
-                height: 1.5,
-              ),
-            ),
-
-            const SizedBox(height: 28),
-
-            // Tombol BICARA utama
-            GestureDetector(
-              onTap: () => _navigateToAssistant(context, inputMode: 'voice'),
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 32),
-                decoration: BoxDecoration(
-                  color: AppColors.red,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.red.withValues(alpha: 0.35),
-                      blurRadius: 20,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 72,
-                      height: 72,
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: const Icon(
-                        Icons.mic,
-                        color: Colors.white,
-                        size: 38,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    const Text(
-                      'Bicara',
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'KLIK & LAPORKAN SUARA',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.white,
-                        letterSpacing: 1.5,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 16),
-
-            // Grid Chat + Foto Kondisi
-            Row(
-              children: [
-                Expanded(
-                  child: _InputCard(
-                    icon: Icons.chat_bubble_outline,
-                    label: 'Chat',
-                    onTap: () => _navigateToAssistant(context, inputMode: 'chat'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _InputCard(
-                    icon: Icons.camera_alt_outlined,
-                    label: 'Foto Kondisi',
-                    onTap: () => _navigateToAssistant(context, inputMode: 'photo'),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 24),
-
-            // Panduan Cepat card
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: const Color(0xFFDDE8F5),
-                borderRadius: BorderRadius.circular(16),
-              ),
+          // ── Konten utama scrollable ──
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
+                  const SizedBox(height: 20),
+
+                  // ── Logo + nama app ──
+                  Image.asset(
+                    'assets/logo/logo-sigap-transparant.png',
+                    width: 64,
+                    height: 64,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'SIGAP',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                      color: AppColors.navy,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Your Emergency Companion',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: AppColors.textGrey,
+                      fontWeight: FontWeight.w500,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  // ── Status badges ──
                   Row(
-                    children: const [
-                      Icon(Icons.info, color: AppColors.navy, size: 20),
-                      SizedBox(width: 8),
-                      Text(
-                        'Panduan Cepat',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: AppColors.navy,
-                        ),
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _StatusBadge(
+                        icon: _gpsActive ? Icons.location_on : Icons.location_off,
+                        label: 'GPS',
+                        color: _gpsActive
+                            ? const Color(0xFF2ECC71)
+                            : const Color(0xFFAAAAAA),
+                      ),
+                      const SizedBox(width: 8),
+                      _StatusBadge(
+                        icon: _isOnline ? Icons.wifi : Icons.wifi_off,
+                        label: _isOnline ? 'ONLINE' : 'OFFLINE',
+                        color: _isOnline
+                            ? const Color(0xFF2ECC71)
+                            : const Color(0xFF4A90D9),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  _GuideStep(
-                    number: 1,
-                    title: 'Pilih Tombol Bantuan',
-                    description:
-                        "Tekan tombol 'Bicara' untuk laporan suara atau 'Chat' untuk teks.",
+                  const SizedBox(height: 6),
+                  // ── Tanggal + Koordinat ──
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.calendar_today_rounded,
+                        size: 11,
+                        color: AppColors.textGrey,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _formattedDate,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.textGrey,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      if (_latitude != null && _longitude != null) ...[
+                        const SizedBox(width: 10),
+                        Container(
+                          width: 1,
+                          height: 10,
+                          color: const Color(0xFFDDDDDD),
+                        ),
+                        const SizedBox(width: 10),
+                        const Icon(
+                          Icons.location_pin,
+                          size: 11,
+                          color: AppColors.textGrey,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          '${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textGrey,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                  const SizedBox(height: 16),
-                  _GuideStep(
-                    number: 2,
-                    title: 'Ikuti instruksi AI sambil hubungi bantuan',
-                    description:
-                        'Gunakan panduan dari asisten cerdas SIGAP sementara Anda menghubungi bantuan medis terdekat.',
+
+                  const SizedBox(height: 20),
+
+                  // ── Chat bubble greeting ──
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        // Avatar SIGAP
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: AppColors.navy.withValues(alpha: 0.08),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(6),
+                            child: Image.asset(
+                              'assets/logo/logo-sigap-transparant.png',
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        // Bubble
+                        Flexible(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 11,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDDE8F5),
+                              borderRadius: const BorderRadius.only(
+                                topLeft: Radius.circular(18),
+                                topRight: Radius.circular(18),
+                                bottomRight: Radius.circular(18),
+                                bottomLeft: Radius.circular(4),
+                              ),
+                            ),
+                            child: const Text(
+                              'Halo! Saya SIGAP.\nSaya bisa membantu panduan pertolongan pertama. Ceritakan apa yang terjadi.',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: AppColors.textDark,
+                                height: 1.5,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
+
+                  const SizedBox(height: 20),
+
+                  // ── Pertanyaan CTA ──
+                  const Text(
+                    'Bagaimana Anda ingin\nmenjelaskan situasinya?',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.navy,
+                      height: 1.4,
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // ── Tiga tombol aksi ──
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _ActionButton(
+                        icon: Icons.chat_bubble_rounded,
+                        label: 'Chat',
+                        color: const Color(0xFF4A90D9),
+                        onTap: () => widget.onOpenAssistant(inputMode: 'chat'),
+                      ),
+                      const SizedBox(width: 20),
+                      _ActionButton(
+                        icon: Icons.mic_rounded,
+                        label: 'Suara',
+                        color: AppColors.red,
+                        onTap: () => widget.onOpenAssistant(inputMode: 'voice'),
+                        isPrimary: true,
+                      ),
+                      const SizedBox(width: 20),
+                      _ActionButton(
+                        icon: Icons.camera_alt_rounded,
+                        label: 'Foto',
+                        color: const Color(0xFF4A90D9),
+                        onTap: () => widget.onOpenAssistant(inputMode: 'photo'),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // ── Info tambahan singkat ──
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: AppColors.navy.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: AppColors.red.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Icon(
+                            Icons.offline_bolt_rounded,
+                            color: AppColors.red,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Berjalan 100% offline',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.navy,
+                                ),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Panduan P3K tersedia tanpa koneksi internet setelah model terpasang.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.textGrey,
+                                  height: 1.4,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
                 ],
               ),
             ),
-
-            const SizedBox(height: 24),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 
-  void _navigateToAssistant(BuildContext context, {String inputMode = 'chat'}) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => AssistantScreen(initialInputMode: inputMode),
-      ),
-    );
-  }
 }
 
 class _StatusBadge extends StatelessWidget {
@@ -430,114 +597,66 @@ class _StatusBadge extends StatelessWidget {
   }
 }
 
-class _InputCard extends StatelessWidget {
+class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
+  final Color color;
   final VoidCallback onTap;
+  final bool isPrimary;
 
-  const _InputCard({
+  const _ActionButton({
     required this.icon,
     required this.label,
+    required this.color,
     required this.onTap,
+    this.isPrimary = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final double iconContainerSize = isPrimary ? 80 : 64;
+    final double iconSize = isPrimary ? 36 : 28;
+    final double fontSize = isPrimary ? 15 : 13;
+
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: iconContainerSize,
+            height: iconContainerSize,
+            decoration: BoxDecoration(
+              color: isPrimary ? color : color.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+              boxShadow: isPrimary
+                  ? [
+                      BoxShadow(
+                        color: color.withValues(alpha: 0.35),
+                        blurRadius: 14,
+                        offset: const Offset(0, 6),
+                      ),
+                    ]
+                  : null,
             ),
-          ],
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: const Color(0xFF4A90D9), size: 32),
-            const SizedBox(height: 10),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: AppColors.textDark,
-              ),
+            child: Icon(
+              icon,
+              size: iconSize,
+              color: isPrimary ? Colors.white : color,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: fontSize,
+              fontWeight:
+                  isPrimary ? FontWeight.w700 : FontWeight.w600,
+              color: isPrimary ? color : AppColors.textDark,
+            ),
+          ),
+        ],
       ),
-    );
-  }
-}
-
-class _GuideStep extends StatelessWidget {
-  final int number;
-  final String title;
-  final String description;
-
-  const _GuideStep({
-    required this.number,
-    required this.title,
-    required this.description,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: const BoxDecoration(
-            color: AppColors.navy,
-            shape: BoxShape.circle,
-          ),
-          child: Center(
-            child: Text(
-              '$number',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                  color: AppColors.textDark,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                description,
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: AppColors.textGrey,
-                  height: 1.4,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
     );
   }
 }

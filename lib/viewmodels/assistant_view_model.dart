@@ -151,7 +151,7 @@ class AssistantViewModel extends ChangeNotifier {
     _serviceStatus = _gemmaService.statusMessage;
   }
 
-  final String _inputMode;
+  String _inputMode;
   final GemmaService _gemmaService;
   final RagService _ragService;
   final TtsService _ttsService;
@@ -276,6 +276,14 @@ class AssistantViewModel extends ChangeNotifier {
     if (isEnabled) {
       await _speakLatestGuidanceIfAvailable();
     }
+  }
+
+  void setInputMode(String value) {
+    if (_inputMode == value) {
+      return;
+    }
+    _inputMode = value;
+    _notifySafely();
   }
 
   Future<void> setTtsSpeechRate(double value) async {
