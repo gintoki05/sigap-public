@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../core/constants.dart';
+import '../services/gemma_service.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({
@@ -23,7 +24,6 @@ class _SplashScreenState extends State<SplashScreen>
   late final AnimationController _controller;
   late final Animation<double> _logoScale;
   late final Animation<double> _contentOpacity;
-  Timer? _navigationTimer;
 
   @override
   void initState() {
@@ -43,12 +43,34 @@ class _SplashScreenState extends State<SplashScreen>
       curve: const Interval(0.15, 1, curve: Curves.easeOut),
     );
 
-    _navigationTimer = Timer(widget.duration, _goToNextScreen);
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
+    final stopwatch = Stopwatch()..start();
+
+    try {
+      // Inisialisasi service Gemma sembari splash screen tampil
+      // Toleransi maksimal sesuai widget.duration (biasanya 2 detik)
+      await GemmaService().initializeReadyModel().timeout(widget.duration);
+    } catch (_) {
+      // Timeout atau error diabaikan agar tetap bisa lanjut ke HomeScreen
+    }
+
+    stopwatch.stop();
+    final elapsed = stopwatch.elapsed;
+    // Minimal durasi untuk splash screen agar animasi sempat selesai
+    const minDuration = Duration(milliseconds: 1400);
+
+    if (elapsed < minDuration) {
+      await Future.delayed(minDuration - elapsed);
+    }
+
+    _goToNextScreen();
   }
 
   @override
   void dispose() {
-    _navigationTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }

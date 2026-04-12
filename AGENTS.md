@@ -356,3 +356,32 @@ Its identity is broad enough for everyday emergencies, but its strongest demo st
 
 That is the promise of SIGAP:  
 *ready before help arrives, even when the internet does not.*
+
+## 16. Standar Pengembangan Flutter & Dart
+
+Agent wajib mengikuti standar teknis berikut demi menjaga kualitas dan maintainability aplikasi:
+
+- **Arsitektur:** 
+    - Menggunakan pola **MVVM** dengan pemisahan yang jelas antara Presentation (widgets/screens), Domain (business logic), dan Data layer (models/repositories).
+    - Menerapkan prinsip **SOLID**, mengutamakan komposisi daripada pewarisan (inheritance), dan immutability pada widget (terutama `StatelessWidget`).
+- **State Management:** 
+    - Memprioritaskan fitur bawaan Flutter (`ValueNotifier`, `ChangeNotifier`, `ListenableBuilder`). 
+    - Tidak menggunakan paket pihak ketiga untuk state management kecuali diminta eksplisit oleh User.
+- **Navigation:** Menggunakan `go_router` untuk navigasi deklaratif (bila navigasi kompleks) atau `Navigator` bawaan untuk dialog/view sementara.
+- **Kualitas Kode:**
+    - Fungsi harus fokus (single purpose) dan diusahakan kurang dari 20 baris.
+    - Nama variabel/kelas harus deskriptif dan menghindari singkatan (mengikuti `PascalCase` untuk kelas dan `camelCase` untuk anggota/variabel).
+    - Baris kode maksimal 80 karakter.
+    - Wajib menggunakan `dartdoc` (`///`) untuk dokumentasi semua API publik.
+- **Theming & UI:**
+    - Menggunakan **Material 3** secara penuh.
+    - Definisi warna terpusat di `ThemeData` (menggunakan `ColorScheme.fromSeed`).
+    - Pastikan kontras warna memenuhi standar **WCAG 2.1 (minimal 4.5:1)**.
+    - Menggunakan `google_fonts` untuk tipografi yang konsisten.
+- **Error Handling & Logging:** 
+    - Tidak boleh ada kegagalan yang silent. Gunakan `try-catch` yang tepat.
+    - Gunakan paket `logging` atau `dart:developer` daripada `print()` untuk logging di environment produksi.
+- **Asset & Images:** 
+    - Deklarasikan asset di `pubspec.yaml`. 
+    - Gunakan `Image.network` dengan `loadingBuilder` dan `errorBuilder`.
+- **Verifikasi Automatis:** Agent harus mendukung penggunaan tool `dart_format`, `dart_fix`, dan `analyze_files` untuk menjaga kebersihan codebase.
