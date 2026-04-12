@@ -124,7 +124,7 @@ class _NavItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = selected ? AppColors.navy : const Color(0xFFAAAAAA);
+    final color = selected ? AppColors.navy : const Color(0xFF888888);
     return Expanded(
       child: GestureDetector(
         onTap: onTap,
@@ -425,59 +425,76 @@ class _HomeTabState extends State<_HomeTab> {
                   // ── Tanggal + Koordinat ──
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     decoration: BoxDecoration(
-                      color: AppColors.navy.withValues(alpha: 0.04),
-                      borderRadius: BorderRadius.circular(20),
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: const Color(0xFFEEEEEE),
+                      ),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                    child: Column(
                       children: [
-                        const Icon(
-                          Icons.calendar_today_rounded,
-                          size: 11,
-                          color: AppColors.textGrey,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _formattedDate,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textGrey,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Container(
-                          width: 1,
-                          height: 10,
-                          color: const Color(0xFFCCCCCC),
-                        ),
-                        const SizedBox(width: 10),
-                        GestureDetector(
-                          onTap: _isFetchingLocation ? null : _refreshCoordinates,
-                          child: Icon(
-                            _isFetchingLocation ? Icons.schedule : Icons.my_location,
-                            size: 12,
-                            color: AppColors.navy,
-                          ),
-                        ),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: GestureDetector(
-                            onTap: _isFetchingLocation ? null : _refreshCoordinates,
-                            child: Text(
-                              _isFetchingLocation
-                                  ? 'Mencari lokasi...'
-                                  : (_latitude != null
-                                      ? (_locationName ?? '${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}')
-                                      : 'Cari lokasi saya'),
-                              style: TextStyle(
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(
+                              Icons.calendar_today_rounded,
+                              size: 11,
+                              color: AppColors.textGrey,
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              _formattedDate,
+                              style: const TextStyle(
                                 fontSize: 11,
-                                color: _latitude == null ? AppColors.navy : AppColors.textGrey,
+                                color: AppColors.textGrey,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
+                          ],
+                        ),
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 8),
+                          child: Divider(
+                            height: 1,
+                            thickness: 1,
+                            color: Color(0xFFE8E8E8),
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: _isFetchingLocation ? null : _refreshCoordinates,
+                          behavior: HitTestBehavior.opaque,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.only(top: 1),
+                                child: Icon(
+                                  _isFetchingLocation ? Icons.schedule : Icons.my_location,
+                                  size: 13,
+                                  color: AppColors.navy,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Flexible(
+                                child: Text(
+                                  _isFetchingLocation
+                                      ? 'Mencari lokasi...'
+                                      : (_latitude != null
+                                          ? (_locationName ?? '${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}')
+                                          : 'Cari lokasi saya'),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: _latitude == null ? AppColors.navy : AppColors.textGrey,
+                                    fontWeight: FontWeight.w600,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ],
