@@ -152,6 +152,55 @@ class UsageQuestionIntent {
       !hasNearFaceContext;
 }
 
+class SymptomQuestionIntent {
+  const SymptomQuestionIntent({
+    required this.isHealthQuestion,
+    required this.hasEmergencySignal,
+    required this.hasMildRespiratorySignal,
+    required this.hasFeverSignal,
+    required this.hasChildContext,
+    required this.hasNasalCongestion,
+    required this.hasCough,
+  });
+
+  final bool isHealthQuestion;
+  final bool hasEmergencySignal;
+  final bool hasMildRespiratorySignal;
+  final bool hasFeverSignal;
+  final bool hasChildContext;
+  final bool hasNasalCongestion;
+  final bool hasCough;
+
+  bool get isMildChildRespiratoryQuestion =>
+      isHealthQuestion &&
+      hasChildContext &&
+      hasMildRespiratorySignal &&
+      !hasEmergencySignal;
+}
+
+enum AssistantQueryIntentKind {
+  emergency,
+  usageQuestion,
+  mildSymptom,
+  general,
+}
+
+class AssistantQueryIntentProfile {
+  const AssistantQueryIntentProfile({
+    required this.kind,
+    required this.usageIntent,
+    required this.symptomIntent,
+  });
+
+  final AssistantQueryIntentKind kind;
+  final UsageQuestionIntent usageIntent;
+  final SymptomQuestionIntent symptomIntent;
+
+  bool get isUsageQuestion => kind == AssistantQueryIntentKind.usageQuestion;
+  bool get isMildSymptom => kind == AssistantQueryIntentKind.mildSymptom;
+  bool get isEmergency => kind == AssistantQueryIntentKind.emergency;
+}
+
 class EmergencyLaunchResult {
   const EmergencyLaunchResult({
     required this.isSuccess,
@@ -1144,7 +1193,7 @@ class AssistantViewModel extends ChangeNotifier {
     bool hasPhotoAttachmentWithoutVision = false,
     bool includeAudioContext = false,
   }) {
-    final usageIntent = _analyzeUsageQuestion(userInput);
+    final intentProfile = _analyzeQueryIntent(userInput);
     final hasContext = ragContext.isNotEmpty;
     final contextBlock = hasContext
         ? ragContext.map((item) => '- $item').join('\n')
@@ -1174,7 +1223,8 @@ User melampirkan foto luka atau kondisi P3K, tetapi analisis visual native sedan
 - Jika informasi visual masih kurang, minta user menjelaskan lokasi luka, perdarahan, ukuran, lepuh, benda menancap, dan kesadaran korban.
 '''
         : 'Tidak ada foto terlampir pada permintaan ini.';
-    final usageGuardrailBlock = _buildUsageGuardrailBlock(usageIntent);
+    final usageGuardrailBlock = _buildUsageGuardrailBlock(intentProfile);
+    final symptomGuardrailBlock = _buildSymptomGuardrailBlock(intentProfile);
 
     return '''
 Anda adalah SIGAP, asisten pertolongan pertama offline untuk warga awam di situasi darurat.
@@ -1189,6 +1239,7 @@ Tugas Anda:
 7. PENTING: Gunakan bahasa yang sama dengan bahasa yang digunakan pada "Laporan user" atau instruksi bahasa yang diminta oleh user. Jika user meminta "answer in english", maka SELURUH balasan Anda (SUMMARY, WARNING, STEPS, QUESTIONS) WAJIB dalam bahasa Inggris.
 8. Jangan mengalihkan jawaban ke kondisi lain yang tidak ditanyakan user. Jika user hanya bertanya tentang keamanan atau penggunaan bahan tertentu, jawab konteks itu dulu. Contoh: pertanyaan tentang minyak kayu putih tidak boleh dibelokkan ke luka bakar kecuali user memang menyebut luka bakar, panas, atau terbakar.
 $usageGuardrailBlock
+$symptomGuardrailBlock
 
 Balas WAJIB dengan format persis seperti ini:
 URGENCY: GREEN atau YELLOW atau RED
@@ -1220,12 +1271,20 @@ Laporan user: $userInput
     required String fallbackInput,
   }) {
     final cleanedRaw = _cleanDisplayText(rawText);
+    final intentProfile = _analyzeQueryIntent(fallbackInput);
     final deterministicUsageGuidance = _buildUsageQuestionGuidance(
-      fallbackInput,
+      intentProfile,
       cleanedRaw,
     );
     if (deterministicUsageGuidance != null) {
       return deterministicUsageGuidance;
+    }
+    final deterministicSymptomGuidance = _buildSymptomQuestionGuidance(
+      intentProfile,
+      cleanedRaw,
+    );
+    if (deterministicSymptomGuidance != null) {
+      return deterministicSymptomGuidance;
     }
     final urgency = _parseUrgency(cleanedRaw, fallbackInput);
     final summary =
@@ -1355,8 +1414,99 @@ Laporan user: $userInput
     );
   }
 
-  String _buildUsageGuardrailBlock(UsageQuestionIntent intent) {
-    if (!intent.isUsageQuestion) {
+  SymptomQuestionIntent _analyzeSymptomQuestion(String input) {
+    final normalized = _normalizeIntentText(input);
+    final hasChildContext = _containsAnyPattern(normalized, const [
+      'anak',
+      'bayi',
+      'balita',
+      'si kecil',
+      'putra saya',
+      'putri saya',
+    ]);
+    final hasNasalCongestion = _containsAnyPattern(normalized, const [
+      'pilek',
+      'hidung tersumbat',
+      'ingusan',
+      'flu',
+      'selesma',
+      'mampet',
+    ]);
+    final hasCough = _containsAnyPattern(normalized, const [
+      'batuk',
+      'batuk pilek',
+      'batuknya',
+    ]);
+    final hasFeverSignal = _containsAnyPattern(normalized, const [
+      'demam',
+      'panas',
+      'meriang',
+      'suhu',
+    ]);
+    final hasEmergencySignal = _containsAnyPattern(normalized, const [
+      'sesak',
+      'sulit bernapas',
+      'napas cepat',
+      'kebiruan',
+      'kejang',
+      'tidak sadar',
+      'lemas sekali',
+      'tidak mau minum',
+      'dehidrasi',
+      'muntah terus',
+    ]);
+    final isHealthQuestion = hasChildContext ||
+        hasNasalCongestion ||
+        hasCough ||
+        hasFeverSignal ||
+        hasEmergencySignal;
+
+    return SymptomQuestionIntent(
+      isHealthQuestion: isHealthQuestion,
+      hasEmergencySignal: hasEmergencySignal,
+      hasMildRespiratorySignal: hasNasalCongestion || hasCough,
+      hasFeverSignal: hasFeverSignal,
+      hasChildContext: hasChildContext,
+      hasNasalCongestion: hasNasalCongestion,
+      hasCough: hasCough,
+    );
+  }
+
+  AssistantQueryIntentProfile _analyzeQueryIntent(String input) {
+    final usageIntent = _analyzeUsageQuestion(input);
+    final symptomIntent = _analyzeSymptomQuestion(input);
+
+    if (symptomIntent.hasEmergencySignal) {
+      return AssistantQueryIntentProfile(
+        kind: AssistantQueryIntentKind.emergency,
+        usageIntent: usageIntent,
+        symptomIntent: symptomIntent,
+      );
+    }
+    if (usageIntent.isUsageQuestion) {
+      return AssistantQueryIntentProfile(
+        kind: AssistantQueryIntentKind.usageQuestion,
+        usageIntent: usageIntent,
+        symptomIntent: symptomIntent,
+      );
+    }
+    if (symptomIntent.isMildChildRespiratoryQuestion) {
+      return AssistantQueryIntentProfile(
+        kind: AssistantQueryIntentKind.mildSymptom,
+        usageIntent: usageIntent,
+        symptomIntent: symptomIntent,
+      );
+    }
+
+    return AssistantQueryIntentProfile(
+      kind: AssistantQueryIntentKind.general,
+      usageIntent: usageIntent,
+      symptomIntent: symptomIntent,
+    );
+  }
+
+  String _buildUsageGuardrailBlock(AssistantQueryIntentProfile intentProfile) {
+    if (!intentProfile.isUsageQuestion) {
       return '';
     }
 
@@ -1370,12 +1520,28 @@ Laporan user: $userInput
 ''';
   }
 
+  String _buildSymptomGuardrailBlock(
+    AssistantQueryIntentProfile intentProfile,
+  ) {
+    if (!intentProfile.isMildSymptom) {
+      return '';
+    }
+
+    return '''
+10. User sedang menyampaikan keluhan ringan anak, terutama pilek, hidung tersumbat, atau batuk ringan.
+- Jangan jawab dengan gaya gawat darurat bila user tidak menyebut red flag.
+- Prioritaskan langkah suportif sederhana di rumah seperti cairan, istirahat, posisi nyaman, dan kebersihan hidung.
+- Jangan langsung mengaitkan ke bahan tertentu, luka, atau kondisi lain yang tidak ditanyakan.
+- Tetap sebutkan red flag singkat yang membuat user perlu mencari bantuan medis.
+''';
+  }
+
   AssistantGuidance? _buildUsageQuestionGuidance(
-    String fallbackInput,
+    AssistantQueryIntentProfile intentProfile,
     String rawText,
   ) {
-    final intent = _analyzeUsageQuestion(fallbackInput);
-    if (!intent.isUsageQuestion) {
+    final intent = intentProfile.usageIntent;
+    if (!intentProfile.isUsageQuestion) {
       return null;
     }
     if (intent.hasBurnContext || intent.hasWoundContext) {
@@ -1487,6 +1653,53 @@ Laporan user: $userInput
       followUpQuestions: const [
         'Bahan apa yang dimaksud dan dipakai dengan cara apa?',
         'Dipakai untuk gejala apa dan usia anak berapa?',
+      ],
+      rawText: rawText,
+    );
+  }
+
+  AssistantGuidance? _buildSymptomQuestionGuidance(
+    AssistantQueryIntentProfile intentProfile,
+    String rawText,
+  ) {
+    final intent = intentProfile.symptomIntent;
+    if (!intentProfile.isMildSymptom) {
+      return null;
+    }
+
+    final summary = intent.hasNasalCongestion && intent.hasCough
+        ? 'Ini terdengar seperti keluhan saluran napas atas ringan pada anak, seperti pilek dan batuk ringan, jadi fokus awalnya adalah membuat anak lebih nyaman dan memantau tanda bahaya.'
+        : 'Ini terdengar seperti keluhan pilek atau hidung tersumbat ringan pada anak, jadi fokus awalnya adalah membantu napas lebih nyaman dan memantau tanda bahaya.';
+    final warning = intent.hasFeverSignal
+        ? 'Cari bantuan medis jika demam tinggi, anak tampak sesak, sangat lemas, atau minum jauh berkurang.'
+        : 'Cari bantuan medis jika anak tampak sesak, bibir kebiruan, sangat lemas, atau sulit minum.';
+    final steps = <AssistantGuidanceStep>[
+      const AssistantGuidanceStep(
+        title: 'Bantu hidung lebih lega',
+        details:
+            'Posisikan anak lebih tegak saat istirahat, bersihkan ingus perlahan, dan bila perlu gunakan saline tetes atau semprot hidung sesuai usia bila tersedia.',
+      ),
+      const AssistantGuidanceStep(
+        title: 'Jaga cairan dan istirahat',
+        details:
+            'Berikan minum sedikit demi sedikit tetapi sering agar anak tetap nyaman dan tidak kekurangan cairan.',
+      ),
+      AssistantGuidanceStep(
+        title: intent.hasFeverSignal ? 'Pantau demam' : 'Pantau napas',
+        details: intent.hasFeverSignal
+            ? 'Pakaikan baju nyaman, pantau suhu, dan perhatikan bila demam makin tinggi atau anak makin rewel dan lemas.'
+            : 'Perhatikan apakah napas menjadi cepat, cuping hidung kembang-kempis, atau anak tampak bekerja keras saat bernapas.',
+      ),
+    ];
+
+    return AssistantGuidance(
+      urgency: intent.hasFeverSignal ? UrgencyLevel.yellow : UrgencyLevel.green,
+      summary: summary,
+      warning: warning,
+      steps: steps,
+      followUpQuestions: const [
+        'Apakah anak masih bisa minum dan bernapas nyaman?',
+        'Apakah ada demam tinggi, sesak, atau anak tampak sangat lemas?',
       ],
       rawText: rawText,
     );
