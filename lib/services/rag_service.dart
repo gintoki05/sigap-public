@@ -95,7 +95,7 @@ class RagService extends ChangeNotifier {
     final databasePath = p.join(documentsDirectory.path, _databaseName);
     _database = await openDatabase(
       databasePath,
-      version: 1,
+      version: 2,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE $_tableKnowledgeBase (
@@ -107,6 +107,19 @@ class RagService extends ChangeNotifier {
             source TEXT NOT NULL
           )
         ''');
+      },
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // Upsert semua dokumen seed agar dokumen baru ikut masuk
+        // ke database yang sudah ada di perangkat pengguna.
+        final batch = db.batch();
+        for (final doc in _seedDocuments) {
+          batch.insert(
+            _tableKnowledgeBase,
+            doc.toRow(),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+        await batch.commit(noResult: true);
       },
     );
 
@@ -153,11 +166,12 @@ class RagService extends ChangeNotifier {
     if (_vectorStoreInitialized) {
       final vectorResults = await _searchVectorStore(input, limit: limit);
       if (vectorResults.isNotEmpty) {
-        return vectorResults;
+        return _rerankResults(input, vectorResults, limit: limit);
       }
     }
 
-    return _searchLocalDatabase(input, limit: limit);
+    final localResults = await _searchLocalDatabase(input, limit: limit);
+    return _rerankResults(input, localResults, limit: limit);
   }
 
   Future<List<RagSearchResult>> _searchVectorStore(
@@ -243,17 +257,9 @@ class RagService extends ChangeNotifier {
       return scored.take(limit).toList();
     }
 
-    return rows
-        .take(limit)
-        .map(RagDocument.fromRow)
-        .map(
-          (document) => RagSearchResult(
-            document: document,
-            score: 0,
-            strategy: 'fallback',
-          ),
-        )
-        .toList();
+    // Tidak ada kecocokan keyword sama sekali - kembalikan kosong agar AI
+    // tidak mendapat konteks RAG yang menyesatkan.
+    return const [];
   }
 
   Future<void> _initializeVectorStoreIfPossible(String documentsPath) async {
@@ -355,6 +361,92 @@ class RagService extends ChangeNotifier {
 
     return expanded.toList();
   }
+
+  List<RagSearchResult> _rerankResults(
+    String input,
+    List<RagSearchResult> results, {
+    required int limit,
+  }) {
+    final normalizedInput = _normalizeText(input);
+    final queryHasBurnIntent = _containsAnyPhrase(normalizedInput, const [
+      'luka bakar',
+      'terbakar',
+      'knalpot',
+      'kena panas',
+      'burn',
+    ]);
+    final queryHasMinyakKayuPutih = _containsAnyPhrase(normalizedInput, const [
+      'minyak kayu putih',
+      'kayu putih',
+    ]);
+
+    final reranked = results
+        .map((result) {
+          final documentText = _normalizeText([
+            result.document.title,
+            result.document.tags.join(' '),
+            result.document.content,
+          ].join(' '));
+
+          var adjustedScore = result.score;
+
+          if (queryHasMinyakKayuPutih &&
+              _containsAnyPhrase(documentText, const [
+                'minyak kayu putih',
+                'kayu putih',
+              ])) {
+            adjustedScore += 4.0;
+          }
+
+          if (normalizedInput.isNotEmpty &&
+              _normalizeText(result.document.title).contains(normalizedInput)) {
+            adjustedScore += 2.5;
+          }
+
+          final documentIsBurnRelated = _containsAnyPhrase(documentText, const [
+            'luka bakar',
+            'terbakar',
+            'knalpot',
+            'kena panas',
+          ]);
+
+          if (queryHasBurnIntent && documentIsBurnRelated) {
+            adjustedScore += 1.5;
+          }
+
+          if (!queryHasBurnIntent && documentIsBurnRelated) {
+            adjustedScore -= 4.0;
+          }
+
+          return RagSearchResult(
+            document: result.document,
+            score: adjustedScore,
+            strategy: result.strategy,
+          );
+        })
+        .where((result) => result.score > 0)
+        .toList()
+      ..sort((a, b) => b.score.compareTo(a.score));
+
+    return reranked.take(limit).toList();
+  }
+
+  String _normalizeText(String input) {
+    return input
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  bool _containsAnyPhrase(String input, List<String> phrases) {
+    for (final phrase in phrases) {
+      if (input.contains(_normalizeText(phrase))) {
+        return true;
+      }
+    }
+    return false;
+  }
 }
 
 const Map<String, List<String>> _keywordAliases = {
@@ -375,8 +467,15 @@ const Map<String, List<String>> _keywordAliases = {
   'listrik': ['sengatan', 'setrum'],
   'setrum': ['listrik', 'sengatan'],
   'ular': ['gigitan', 'bisa'],
-  'keracunan': ['racun', 'muntah', 'tertelan'],
+  // 'keracunan' dengan 'muntah' dipisah agar muntah biasa tidak match ke keracunan
+  'keracunan': ['racun', 'tertelan'],
+  'muntah': ['mual', 'muntah-muntah', 'kembung', 'diare'],
+  'mual': ['muntah', 'pusing', 'lemas'],
+  'diare': ['mencret', 'buang air', 'dehidrasi'],
+  'demam': ['panas badan', 'suhu tinggi', 'meriang'],
+  'dehidrasi': ['lemas', 'haus', 'kurang cairan', 'diare'],
   'infeksi': ['nanah', 'merah', 'bengkak'],
+  'kayu putih': ['minyak kayu putih', 'telon', 'aromaterapi'],
 };
 
 const Map<String, List<String>> _phraseAliases = {
@@ -387,6 +486,12 @@ const Map<String, List<String>> _phraseAliases = {
   'luka sayat': ['sayat', 'sayatan', 'berdarah'],
   'luka lecet': ['lecet', 'abrasi', 'tergores'],
   'patah tulang': ['fraktur', 'imobilisasi', 'cedera'],
+  'minyak kayu putih': ['kayu putih', 'telon', 'minyak herbal'],
+  'anak muntah': ['muntah', 'bayi', 'dehidrasi', 'cairan'],
+  'anak panas': ['demam', 'bayi', 'suhu tinggi'],
+  'diare anak': ['diare', 'dehidrasi', 'bayi', 'anak'],
+  'buang air': ['diare', 'dehidrasi', 'cairan'],
+  'tidak mau makan': ['mual', 'lemas', 'nafsu makan'],
 };
 
 final List<RagDocument> _seedDocuments = [
@@ -730,6 +835,75 @@ final List<RagDocument> _seedDocuments = [
     tags: ['mitos', 'demam', 'alkohol'],
     content:
         'Mitos berbahaya: alkohol harus dioles banyak ke tubuh untuk menurunkan demam. Koreksi: ini bisa mengiritasi kulit dan tidak menangani penyebabnya. Pantau gejala berat dan cari bantuan medis bila perlu.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  RagDocument(
+    id: 'protocol-muntah-mual',
+    title: 'Panduan P3K Mual dan Muntah',
+    category: 'protokol',
+    tags: [
+      'muntah',
+      'mual',
+      'muntah-muntah',
+      'diare',
+      'anak',
+      'bayi',
+      'dehidrasi',
+    ],
+    content:
+        'Untuk mual dan muntah ringan: istirahatkan korban dalam posisi duduk atau setengah tegak agar tidak tersedak muntahan, jangan paksa makan atau minum segera setelah muntah. Setelah muntah mereda, coba berikan cairan sedikit demi sedikit (air putih atau oralit) untuk mencegah dehidrasi. Pantau tanda dehidrasi seperti mulut kering, mata cekung, atau tidak buang air kecil. Pada bayi dan anak kecil, risiko dehidrasi lebih cepat — cari bantuan medis lebih awal. Segera ke fasilitas kesehatan bila muntah sangat sering, ada darah, anak tampak lemas atau tidak responsif, atau disertai nyeri perut berat.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  RagDocument(
+    id: 'protocol-diare',
+    title: 'Panduan P3K Diare',
+    category: 'protokol',
+    tags: ['diare', 'mencret', 'dehidrasi', 'oralit', 'anak', 'cairan'],
+    content:
+        'Untuk diare ringan hingga sedang: prioritas utama adalah mencegah dehidrasi dengan minum cairan yang cukup, idealnya oralit atau larutan gula garam (1 sendok teh gula dan sejumput garam dalam 1 gelas air bersih). Jangan menghentikan makan — makan lunak seperti nasi tim tetap dianjurkan. Pada bayi yang masih ASI, teruskan pemberian ASI. Segera cari bantuan medis bila diare disertai darah, anak tampak lemas atau sangat mengantuk, tidak buang air kecil lebih dari 6 jam, atau ada tanda dehidrasi berat.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  RagDocument(
+    id: 'protocol-demam',
+    title: 'Panduan P3K Demam',
+    category: 'protokol',
+    tags: ['demam', 'panas badan', 'suhu tinggi', 'meriang', 'anak', 'bayi'],
+    content:
+        'Untuk demam ringan hingga sedang: pastikan penderita minum cairan yang cukup, gunakan pakaian tipis yang nyaman, dan boleh kompres hangat (bukan dingin atau es) di dahi atau ketiak. Obat penurun panas (parasetamol sesuai dosis usia) dapat diberikan bila tersedia dan tidak ada kontraindikasi. Pantau suhu secara berkala. Cari bantuan medis bila demam sangat tinggi (di atas 39°C), demam berlangsung lebih dari 3 hari, disertai kejang, atau anak tampak sangat lemas dan tidak responsif.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  RagDocument(
+    id: 'info-minyak-kayu-putih',
+    title: 'Penggunaan Minyak Kayu Putih pada Anak',
+    category: 'info',
+    tags: [
+      'minyak kayu putih',
+      'kayu putih',
+      'telon',
+      'anak',
+      'bayi',
+      'muntah',
+      'kembung',
+      'masuk angin',
+    ],
+    content:
+        'Minyak kayu putih secara tradisional digunakan di Indonesia untuk meredakan perut kembung, masuk angin ringan, atau keluhan umum pada anak. Penggunaan oles (topikal) di perut atau punggung umumnya dianggap aman untuk kulit anak yang tidak sensitif. Namun, minyak kayu putih tidak boleh ditelan (oral) karena mengandung senyawa yang berpotensi toksik bila tertelan, terutama pada bayi dan anak kecil. Jangan oleskan di dekat hidung, mulut, atau mata bayi. Jika anak mengalami muntah, minyak kayu putih tidak mengatasi penyebab muntah — pantau tanda dehidrasi dan berikan cairan sedikit demi sedikit. Bila anak tertelan minyak kayu putih, hubungi bantuan medis segera.',
+    source: 'Ringkasan internal SIGAP',
+  ),
+  RagDocument(
+    id: 'myth-vomit-eucalyptus',
+    title: 'Mitos: Minyak kayu putih obati muntah jika ditelan',
+    category: 'mitos',
+    tags: [
+      'mitos',
+      'minyak kayu putih',
+      'muntah',
+      'anak',
+      'oral',
+      'tertelan',
+    ],
+    content:
+        'Mitos berbahaya: minyak kayu putih aman diminum atau diberikan oral kepada anak yang muntah atau masuk angin. Koreksi: minyak kayu putih mengandung eucalyptol yang berbahaya bila tertelan, terutama pada bayi dan anak kecil. Gejala keracunan meliputi pusing, mual, dan dalam kasus berat bisa menyebabkan kejang atau penurunan kesadaran. Penggunaan topikal (oles di kulit) berbeda dari penggunaan oral dan umumnya lebih aman bila tidak di dekat wajah bayi.',
     source: 'Ringkasan internal SIGAP',
   ),
 ];

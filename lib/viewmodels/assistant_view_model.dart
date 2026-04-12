@@ -118,6 +118,40 @@ class AssistantGuidanceRequest {
   bool get usesAudioInference => includeAudioContext && userAudioBytes != null;
 }
 
+class UsageQuestionIntent {
+  const UsageQuestionIntent({
+    required this.isUsageQuestion,
+    required this.hasBurnContext,
+    required this.hasWoundContext,
+    required this.hasOralContext,
+    required this.hasTopicalContext,
+    required this.hasNearFaceContext,
+    required this.hasChildContext,
+    required this.hasVomitingContext,
+    required this.mentionsEucalyptusOil,
+    required this.mentionsUnclearSubstance,
+  });
+
+  final bool isUsageQuestion;
+  final bool hasBurnContext;
+  final bool hasWoundContext;
+  final bool hasOralContext;
+  final bool hasTopicalContext;
+  final bool hasNearFaceContext;
+  final bool hasChildContext;
+  final bool hasVomitingContext;
+  final bool mentionsEucalyptusOil;
+  final bool mentionsUnclearSubstance;
+
+  bool get needsRouteClarification =>
+      isUsageQuestion &&
+      !hasBurnContext &&
+      !hasWoundContext &&
+      !hasOralContext &&
+      !hasTopicalContext &&
+      !hasNearFaceContext;
+}
+
 class EmergencyLaunchResult {
   const EmergencyLaunchResult({
     required this.isSuccess,
@@ -847,7 +881,30 @@ class AssistantViewModel extends ChangeNotifier {
       );
 
       // Selalu gunakan streaming untuk memprioritaskan pengalaman respons yang bertahap buat User
+      String? lastToken;
+      var repeatCount = 0;
+      var totalTokens = 0;
+      const maxRepeatCount = 30;
+      const maxTokens = 2000;
+      var repetitionDetected = false;
+
       await for (final token in _streamResponseForRequest(request, prompt)) {
+        totalTokens++;
+
+        // Deteksi repetisi token yang sama berulang (repetition loop)
+        if (token == lastToken && token.trim().isNotEmpty) {
+          repeatCount++;
+        } else {
+          repeatCount = 0;
+        }
+        lastToken = token;
+
+        if (repeatCount >= maxRepeatCount || totalTokens >= maxTokens) {
+          repetitionDetected = true;
+          await _gemmaService.stopActiveGeneration();
+          break;
+        }
+
         buffer.write(token);
         _replaceAssistantMessageAt(
           assistantMessageIndex,
@@ -855,6 +912,21 @@ class AssistantViewModel extends ChangeNotifier {
         );
         _notifySafely();
       }
+
+      if (repetitionDetected) {
+        final partialText = _cleanDisplayText(buffer.toString()).trim();
+        final message = partialText.isNotEmpty
+            ? partialText
+            : 'Model menghasilkan respons tidak valid. Coba ulangi pertanyaan dengan kalimat berbeda.';
+        _replaceAssistantMessageAt(assistantMessageIndex, message);
+        _serviceStatus =
+            'Generasi dihentikan otomatis karena deteksi repetisi.';
+        await _gemmaService.resetConversation();
+        _isSendingMessage = false;
+        _notifySafely();
+        return;
+      }
+
       if (_stopGenerationRequested) {
         final partialText = _cleanDisplayText(buffer.toString()).trim();
         final stoppedText = partialText.isEmpty
@@ -1072,6 +1144,7 @@ class AssistantViewModel extends ChangeNotifier {
     bool hasPhotoAttachmentWithoutVision = false,
     bool includeAudioContext = false,
   }) {
+    final usageIntent = _analyzeUsageQuestion(userInput);
     final hasContext = ragContext.isNotEmpty;
     final contextBlock = hasContext
         ? ragContext.map((item) => '- $item').join('\n')
@@ -1101,6 +1174,7 @@ User melampirkan foto luka atau kondisi P3K, tetapi analisis visual native sedan
 - Jika informasi visual masih kurang, minta user menjelaskan lokasi luka, perdarahan, ukuran, lepuh, benda menancap, dan kesadaran korban.
 '''
         : 'Tidak ada foto terlampir pada permintaan ini.';
+    final usageGuardrailBlock = _buildUsageGuardrailBlock(usageIntent);
 
     return '''
 Anda adalah SIGAP, asisten pertolongan pertama offline untuk warga awam di situasi darurat.
@@ -1113,6 +1187,8 @@ Tugas Anda:
 5. Jangan gunakan markdown tebal, bullet aneh, atau paragraf panjang.
 6. Untuk foto atau gejala yang ambigu, katakan dengan jujur bahwa AI bisa salah dan pemeriksaan tenaga medis tetap penting.
 7. PENTING: Gunakan bahasa yang sama dengan bahasa yang digunakan pada "Laporan user" atau instruksi bahasa yang diminta oleh user. Jika user meminta "answer in english", maka SELURUH balasan Anda (SUMMARY, WARNING, STEPS, QUESTIONS) WAJIB dalam bahasa Inggris.
+8. Jangan mengalihkan jawaban ke kondisi lain yang tidak ditanyakan user. Jika user hanya bertanya tentang keamanan atau penggunaan bahan tertentu, jawab konteks itu dulu. Contoh: pertanyaan tentang minyak kayu putih tidak boleh dibelokkan ke luka bakar kecuali user memang menyebut luka bakar, panas, atau terbakar.
+$usageGuardrailBlock
 
 Balas WAJIB dengan format persis seperti ini:
 URGENCY: GREEN atau YELLOW atau RED
@@ -1144,6 +1220,13 @@ Laporan user: $userInput
     required String fallbackInput,
   }) {
     final cleanedRaw = _cleanDisplayText(rawText);
+    final deterministicUsageGuidance = _buildUsageQuestionGuidance(
+      fallbackInput,
+      cleanedRaw,
+    );
+    if (deterministicUsageGuidance != null) {
+      return deterministicUsageGuidance;
+    }
     final urgency = _parseUrgency(cleanedRaw, fallbackInput);
     final summary =
         _extractSingleLine(cleanedRaw, 'SUMMARY') ??
@@ -1162,6 +1245,284 @@ Laporan user: $userInput
       followUpQuestions: followUpQuestions,
       rawText: cleanedRaw,
     );
+  }
+
+  UsageQuestionIntent _analyzeUsageQuestion(String input) {
+    final normalized = _normalizeIntentText(input);
+    final hasQuestionVerb = _containsAnyPattern(normalized, const [
+      'boleh',
+      'aman',
+      'bisakah',
+      'bisa kah',
+      'apakah boleh',
+      'apa boleh',
+      'bolehkah',
+      'gimana pakainya',
+      'cara pakai',
+      'dipakai',
+      'dioles',
+      'diberikan',
+      'ditetes',
+      'diminum',
+      'ditelan',
+      'digunakan',
+    ]);
+    final mentionsSubstance = _containsAnyPattern(normalized, const [
+      'minyak',
+      'kayu putih',
+      'minyak kayu putih',
+      'telon',
+      'balsem',
+      'balsam',
+      'obat',
+      'salep',
+      'krim',
+      'ramuan',
+    ]);
+    final hasBurnContext = _containsAnyPattern(normalized, const [
+      'luka bakar',
+      'terbakar',
+      'kena panas',
+      'knalpot',
+      'burn',
+    ]);
+    final hasWoundContext = _containsAnyPattern(normalized, const [
+      'luka',
+      'lecet',
+      'sayat',
+      'gores',
+      'berdarah',
+      'lepuh',
+    ]);
+    final hasOralContext = _containsAnyPattern(normalized, const [
+      'diminum',
+      'ditelan',
+      'masuk mulut',
+      'oral',
+      'dicekok',
+      'dikasih minum',
+    ]);
+    final hasTopicalContext = _containsAnyPattern(normalized, const [
+      'dioles',
+      'oles',
+      'topikal',
+      'di kulit',
+      'di perut',
+      'di punggung',
+      'di dada',
+    ]);
+    final hasNearFaceContext = _containsAnyPattern(normalized, const [
+      'di hidung',
+      'dekat hidung',
+      'di mulut',
+      'dekat mulut',
+      'di mata',
+      'dekat mata',
+      'di wajah',
+      'dihirup',
+      'hirup',
+    ]);
+    final hasChildContext = _containsAnyPattern(normalized, const [
+      'anak',
+      'bayi',
+      'balita',
+      'si kecil',
+    ]);
+    final hasVomitingContext = _containsAnyPattern(normalized, const [
+      'muntah',
+      'mual',
+      'muntah muntah',
+      'muntah-muntah',
+    ]);
+    final mentionsEucalyptusOil = _containsAnyPattern(normalized, const [
+      'minyak kayu putih',
+      'kayu putih',
+      'cajuput',
+      'telon',
+    ]);
+
+    return UsageQuestionIntent(
+      isUsageQuestion: hasQuestionVerb && mentionsSubstance,
+      hasBurnContext: hasBurnContext,
+      hasWoundContext: hasWoundContext,
+      hasOralContext: hasOralContext,
+      hasTopicalContext: hasTopicalContext,
+      hasNearFaceContext: hasNearFaceContext,
+      hasChildContext: hasChildContext,
+      hasVomitingContext: hasVomitingContext,
+      mentionsEucalyptusOil: mentionsEucalyptusOil,
+      mentionsUnclearSubstance: mentionsSubstance && !mentionsEucalyptusOil,
+    );
+  }
+
+  String _buildUsageGuardrailBlock(UsageQuestionIntent intent) {
+    if (!intent.isUsageQuestion) {
+      return '';
+    }
+
+    return '''
+9. User sedang bertanya tentang keamanan atau cara penggunaan bahan/produk tertentu.
+- Bedakan dengan tegas rute pemakaian: diminum/ditelan, dioles di kulit, di dekat hidung atau wajah, dan pada luka atau luka bakar.
+- Jangan mengubah larangan pada satu rute menjadi larangan total pada semua rute.
+- Jika kata user ambigu seperti "diberikan", jelaskan perbedaannya: "kalau maksudnya dioles..." dan "kalau maksudnya diminum...".
+- Jika user tidak menyebut luka atau luka bakar, jangan membahas luka atau luka bakar.
+- Jika ada konteks anak atau bayi, beri peringatan tambahan untuk area hidung, mulut, mata, dan risiko iritasi atau tertelan.
+''';
+  }
+
+  AssistantGuidance? _buildUsageQuestionGuidance(
+    String fallbackInput,
+    String rawText,
+  ) {
+    final intent = _analyzeUsageQuestion(fallbackInput);
+    if (!intent.isUsageQuestion) {
+      return null;
+    }
+    if (intent.hasBurnContext || intent.hasWoundContext) {
+      return null;
+    }
+
+    if (intent.mentionsEucalyptusOil) {
+      return _buildEucalyptusOilGuidance(intent, rawText);
+    }
+
+    return _buildGenericUsageGuidance(intent, rawText);
+  }
+
+  AssistantGuidance _buildEucalyptusOilGuidance(
+    UsageQuestionIntent intent,
+    String rawText,
+  ) {
+    final isOral = intent.hasOralContext;
+    final isNearFace = intent.hasNearFaceContext;
+    final isTopical =
+        intent.hasTopicalContext || (!isOral && !isNearFace);
+    final summary = isOral
+        ? 'Minyak kayu putih tidak aman untuk diminum atau ditelan, terutama pada bayi dan anak kecil.'
+        : isNearFace
+        ? 'Minyak kayu putih tidak sebaiknya dioles dekat hidung, mulut, atau mata, terutama pada bayi dan anak kecil.'
+        : 'Minyak kayu putih yang dioles di kulit, seperti perut atau punggung, berbeda dari diminum dan tidak sama dengan larangan total.';
+    final warning = isOral
+        ? 'Jika minyak kayu putih tertelan, segera cari bantuan medis karena kandungannya bisa berbahaya.'
+        : isNearFace
+        ? 'Hindari area wajah karena bisa mengiritasi dan berisiko terhirup atau masuk ke mata atau mulut.'
+        : intent.hasVomitingContext
+        ? 'Minyak kayu putih tidak mengatasi penyebab muntah; pantau tanda dehidrasi dan cari bantuan medis bila muntah terus berlanjut.'
+        : 'Hentikan pemakaian bila muncul iritasi kulit, sesak, atau anak tampak makin tidak nyaman.';
+    final steps = <AssistantGuidanceStep>[
+      AssistantGuidanceStep(
+        title: isOral ? 'Jangan diminum' : 'Bedakan cara pakai',
+        details: isOral
+            ? 'Minyak kayu putih hanya untuk pemakaian luar dan tidak untuk diberikan lewat mulut.'
+            : isNearFace
+            ? 'Pemakaian dekat hidung, mulut, atau mata berbeda dari oles di kulit dan lebih berisiko pada bayi atau anak kecil.'
+            : 'Kalau maksudnya dioles di kulit, pilih area seperti perut atau punggung dan hindari wajah, mata, serta mulut.',
+      ),
+      AssistantGuidanceStep(
+        title: isTopical ? 'Pakai tipis di kulit' : 'Hindari area sensitif',
+        details: isTopical
+            ? 'Oles tipis pada kulit yang utuh dan hentikan bila kulit merah, perih, atau anak tidak nyaman.'
+            : 'Jangan teteskan atau oles dekat hidung, mulut, atau mata, terutama pada bayi.',
+      ),
+      AssistantGuidanceStep(
+        title: intent.hasVomitingContext
+            ? 'Pantau muntah dan cairan'
+            : 'Pantau reaksi anak',
+        details: intent.hasVomitingContext
+            ? 'Fokus utama tetap mencegah dehidrasi dengan cairan sedikit demi sedikit bila anak mampu minum, lalu cari bantuan medis jika muntah sering, lemas, atau tidak responsif.'
+            : 'Perhatikan iritasi, batuk, sesak, atau keluhan baru setelah pemakaian.',
+      ),
+    ];
+    final questions = intent.needsRouteClarification
+        ? const [
+            'Maksudnya ingin dioles di kulit, di dekat hidung, atau ada yang tertelan?',
+            'Anaknya bayi, balita, atau sudah lebih besar?',
+          ]
+        : const [
+            'Apakah minyaknya hanya dioles di kulit atau ada yang tertelan?',
+            'Apakah anak masih muntah terus atau mulai tampak lemas?',
+          ];
+
+    return AssistantGuidance(
+      urgency: _resolveUsageUrgency(intent, rawText),
+      summary: summary,
+      warning: warning,
+      steps: steps,
+      followUpQuestions: questions,
+      rawText: rawText,
+    );
+  }
+
+  AssistantGuidance _buildGenericUsageGuidance(
+    UsageQuestionIntent intent,
+    String rawText,
+  ) {
+    final summary =
+        'Pemakaian bahan atau produk seperti ini perlu dibedakan menurut cara pakainya, jadi tidak aman jika langsung dianggap boleh semua atau tidak boleh semua.';
+    final warning =
+        'Jika maksudnya diminum, ditelan, dihirup dekat wajah, atau dioles pada luka, risikonya berbeda dan perlu kehati-hatian lebih tinggi.';
+    final steps = <AssistantGuidanceStep>[
+      const AssistantGuidanceStep(
+        title: 'Jelaskan cara pakai',
+        details:
+            'Bedakan apakah bahan akan diminum, dioles di kulit, dipakai dekat hidung atau mata, atau mengenai luka.',
+      ),
+      const AssistantGuidanceStep(
+        title: 'Hindari area sensitif',
+        details:
+            'Jangan pakai dekat mata, mulut, atau hidung anak sebelum jelas keamanannya.',
+      ),
+      const AssistantGuidanceStep(
+        title: 'Pantau keluhan utama',
+        details:
+            'Bahan oles tidak selalu mengatasi penyebab gejala, jadi tetap pantau sesak, muntah berulang, lemas, atau tanda bahaya lain.',
+      ),
+    ];
+
+    return AssistantGuidance(
+      urgency: _resolveUsageUrgency(intent, rawText),
+      summary: summary,
+      warning: warning,
+      steps: steps,
+      followUpQuestions: const [
+        'Bahan apa yang dimaksud dan dipakai dengan cara apa?',
+        'Dipakai untuk gejala apa dan usia anak berapa?',
+      ],
+      rawText: rawText,
+    );
+  }
+
+  UrgencyLevel _resolveUsageUrgency(
+    UsageQuestionIntent intent,
+    String rawText,
+  ) {
+    if (intent.hasOralContext) {
+      return UrgencyLevel.yellow;
+    }
+    final upperText = rawText.toUpperCase();
+    if (upperText.contains('URGENCY: RED') ||
+        upperText.contains('KEJANG') ||
+        upperText.contains('SESAK')) {
+      return UrgencyLevel.red;
+    }
+    return intent.hasVomitingContext ? UrgencyLevel.yellow : UrgencyLevel.green;
+  }
+
+  String _normalizeIntentText(String input) {
+    return input
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  bool _containsAnyPattern(String input, List<String> patterns) {
+    for (final pattern in patterns) {
+      if (input.contains(_normalizeIntentText(pattern))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   UrgencyLevel _parseUrgency(String rawText, String fallbackInput) {
