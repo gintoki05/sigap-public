@@ -251,15 +251,15 @@ class AssistantViewModel extends ChangeNotifier {
   String get visionStatusSummary {
     switch (_visionState) {
       case AssistantVisionState.disabled:
-        return 'Analisis Foto Beta dimatikan. SIGAP hanya memakai deskripsi teks saat ada lampiran foto.';
+        return 'AI Vision (Hemat RAM) dimatikan. SIGAP fokus pada deskripsi teks saat ada lampiran foto.';
       case AssistantVisionState.enabled:
         return _gemmaService.lastInferenceUsedVision
             ? _gemmaService.lastInferenceDebugLabel
-            : 'Analisis Foto Beta aktif. SIGAP akan mencoba membaca foto luka, tetapi tetap membutuhkan deskripsi singkat untuk hasil yang lebih aman.';
+            : 'AI Vision aktif memproses offline. Mohon tambahkan teks deskripsi sebagai fallback jika perangkat kehabisan RAM.';
       case AssistantVisionState.tryingVision:
-        return 'SIGAP sedang mencoba Analisis Foto Beta. Jika jalur visual gagal, aplikasi akan kembali ke deskripsi teks.';
+        return 'Memproses gambar offline (Heavy Vision)... Prioritas beralih ke teks jika memori tidak cukup.';
       case AssistantVisionState.visionFailedFallback:
-        return 'Analisis Foto Beta gagal di perangkat ini. SIGAP kembali memakai deskripsi teks untuk menjaga stabilitas.';
+        return 'Memori perangkat tidak cukup untuk AI Vision. SIGAP beralih memakai deskripsi teks.';
     }
   }
 
@@ -357,8 +357,8 @@ class AssistantViewModel extends ChangeNotifier {
         ? AssistantVisionState.enabled
         : AssistantVisionState.disabled;
     _serviceStatus = value
-        ? 'Analisis Foto Beta aktif. SIGAP akan mencoba membaca foto luka, lalu fallback ke teks jika inference visual gagal.'
-        : 'Analisis Foto Beta dimatikan. SIGAP hanya memakai deskripsi teks saat foto dilampirkan.';
+        ? 'AI Vision aktif (Membutuhkan RAM besar). Processing berjalan secara on-device. Fallback teks akan dipakai bila memori RAM penuh.'
+        : 'AI Vision dimatikan. Pemrosesan lebih hemat daya karena hanya mengandalkan deskripsi teks yang dilampirkan.';
     _notifySafely();
   }
 
@@ -650,7 +650,7 @@ class AssistantViewModel extends ChangeNotifier {
     if (!_isVisionBetaEnabled) {
       _visionState = AssistantVisionState.disabled;
       _serviceStatus =
-          'Foto diterima sebagai lampiran, tetapi Analisis Foto Beta sedang dimatikan. SIGAP akan memakai deskripsi teks untuk menjaga stabilitas.';
+          'Foto diterima, Mode AI Vision sedang dimatikan untuk hemat RAM. SIGAP memakai teks untuk stabilitas memori.';
 
       if (trimmedDraft.isEmpty) {
         _messages.add(
@@ -665,7 +665,7 @@ class AssistantViewModel extends ChangeNotifier {
           const AssistantMessage(
             role: 'assistant',
             text:
-                'Analisis Foto Beta sedang dimatikan di perangkat ini. Tambahkan deskripsi singkat tentang lokasi luka, perdarahan, ukuran, atau kondisi korban, lalu kirim lagi agar SIGAP bisa memberi panduan yang lebih tepat.',
+                'AI Vision dimatikan. Harap tambahkan deskripsi teks detail tentang lokasi, pendarahan, atau ukuran luka, agar SIGAP bisa membuat panduan P3K akurat.',
           ),
         );
         _notifySafely();
@@ -685,7 +685,7 @@ class AssistantViewModel extends ChangeNotifier {
 
     _visionState = AssistantVisionState.tryingVision;
     _serviceStatus =
-        'Analisis Foto Beta sedang dicoba. SIGAP akan mencoba membaca foto luka dan otomatis fallback ke deskripsi teks jika inference visual gagal.';
+        'Memeriksa memori: Memulai AI Vision... SIGAP memproses gambar secara offline (Heavy RAM Mode). Jika nge-lag atau freeze, akan fallback ke deskripsi Anda.';
     _notifySafely();
 
     final userMessage = trimmedDraft.isEmpty
@@ -820,30 +820,15 @@ class AssistantViewModel extends ChangeNotifier {
             request.hasPhotoAttachmentWithoutVision,
         includeAudioContext: request.includeAudioContext,
       );
-      final canUseFunctionCalling =
-          !request.usesImageInference && !request.usesAudioInference;
-      if (canUseFunctionCalling) {
-        final functionCallingText =
-            await _gemmaService.generateResponseWithFunctionCalls(
-              prompt: prompt,
-              tools: _guidanceTools,
-              onFunctionCall: _executeGuidanceTool,
-            );
-        buffer.write(functionCallingText);
+
+      // Selalu gunakan streaming untuk memprioritaskan pengalaman respons yang bertahap buat User
+      await for (final token in _streamResponseForRequest(request, prompt)) {
+        buffer.write(token);
         _replaceAssistantMessageAt(
           assistantMessageIndex,
           _cleanDisplayText(buffer.toString()),
         );
         _notifySafely();
-      } else {
-        await for (final token in _streamResponseForRequest(request, prompt)) {
-          buffer.write(token);
-          _replaceAssistantMessageAt(
-            assistantMessageIndex,
-            _cleanDisplayText(buffer.toString()),
-          );
-          _notifySafely();
-        }
       }
       if (request.usesImageInference) {
         _visionState = AssistantVisionState.enabled;

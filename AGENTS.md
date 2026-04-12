@@ -185,7 +185,6 @@ Sebelum menyatakan task selesai, agent harus mengecek:
 - apakah kode benar-benar diubah jika task meminta implementasi
 - apakah perubahan selaras dengan issue yang sedang dikerjakan
 - apakah ada TODO/stub kritis yang masih membuat fitur belum usable
-- apakah test/analyze/build perlu dijalankan atau cukup diserahkan ke user untuk verifikasi manual
 - apakah perlu mengusulkan update status di Linear
 
 ## 11A. Aturan Verifikasi Manual Oleh User

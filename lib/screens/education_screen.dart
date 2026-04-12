@@ -99,6 +99,38 @@ class _EducationScreenState extends State<EducationScreen> {
                 children: [
                   _ArticleCategoryChip(label: latestArticle.category),
                   const SizedBox(height: 12),
+                  if (latestArticle.id == 'edu-bpjs') ...[
+                    Container(
+                      width: double.infinity,
+                      height: 160,
+                      decoration: BoxDecoration(
+                        color: AppColors.urgencyGreen.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: AppColors.urgencyGreen.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.credit_card_outlined,
+                            size: 48,
+                            color: AppColors.urgencyGreen,
+                          ),
+                          SizedBox(height: 8),
+                          Text(
+                            'Kartu BPJS Kesehatan',
+                            style: TextStyle(
+                              color: AppColors.urgencyGreen,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   Text(
                     latestArticle.title,
                     style: const TextStyle(
