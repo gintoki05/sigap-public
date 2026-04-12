@@ -2393,30 +2393,62 @@ class _BottomInputBar extends StatelessWidget {
                 width: double.infinity,
                 margin: const EdgeInsets.only(bottom: 8),
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
+                  horizontal: 14,
+                  vertical: 12,
                 ),
                 decoration: BoxDecoration(
-                  color: AppColors.red.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(14),
+                  color: AppColors.red.withValues(alpha: 0.07),
+                  borderRadius: BorderRadius.circular(16),
                   border: Border.all(
-                    color: AppColors.red.withValues(alpha: 0.18),
+                    color: AppColors.red.withValues(alpha: 0.25),
                   ),
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.mic, size: 18, color: AppColors.red),
-                    const SizedBox(width: 8),
+                    const Icon(Icons.mic, size: 22, color: AppColors.red),
+                    const SizedBox(width: 10),
                     Expanded(
-                      child: Text(
-                        'Merekam suara ${_formatDuration(voiceRecordingDuration)}. Tekan mikrofon lagi untuk kirim.',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.textDark,
-                          fontWeight: FontWeight.w700,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text(
+                            'Merekam suara...',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: AppColors.red,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          Text(
+                            _formatDuration(voiceRecordingDuration),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textGrey,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    FilledButton.icon(
+                      onPressed: () async => onVoice(),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.red,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
                         ),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      icon: const Icon(Icons.send_rounded, size: 16),
+                      label: const Text(
+                        'Kirim',
+                        style: TextStyle(fontWeight: FontWeight.w700),
                       ),
                     ),
                   ],
@@ -2494,23 +2526,28 @@ class _BottomInputBar extends StatelessWidget {
                   ],
                 ),
               ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                IconButton(
-                  onPressed: () async => onVoice(),
-                  icon: Icon(
-                    isRecordingVoice ? Icons.stop_circle : Icons.mic,
-                    color: isRecordingVoice ? AppColors.red : AppColors.navy,
+                if (!isRecordingVoice)
+                  _InputActionIcon(
+                    onPressed: () async => onVoice(),
+                    icon: Icons.mic_rounded,
+                    tooltip: 'Rekam suara',
+                    color: AppColors.navy,
                   ),
-                  tooltip: isRecordingVoice
-                      ? 'Stop dan kirim rekaman'
-                      : 'Rekam suara',
-                ),
-                IconButton(
-                  onPressed: () async => onPhoto(),
-                  icon: const Icon(Icons.camera_alt, color: AppColors.navy),
-                ),
+                if (!isRecordingVoice)
+                  const SizedBox(width: 4),
+                if (!isRecordingVoice)
+                  _InputActionIcon(
+                    onPressed: () async => onPhoto(),
+                    icon: Icons.camera_alt_rounded,
+                    tooltip: 'Ambil foto',
+                    color: AppColors.navy,
+                  ),
+                if (!isRecordingVoice)
+                  const SizedBox(width: 6),
                 Expanded(
                   child: TextField(
                     controller: controller,
@@ -2518,9 +2555,12 @@ class _BottomInputBar extends StatelessWidget {
                     textCapitalization: TextCapitalization.sentences,
                     minLines: 1,
                     maxLines: 4,
+                    enabled: !isRecordingVoice,
                     decoration: InputDecoration(
-                      hintText: pendingPhoto != null
-                          ? 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm. Tolong cek apakah tampak perlu tindakan cepat.'
+                      hintText: isRecordingVoice
+                          ? 'Sedang merekam suara...'
+                          : pendingPhoto != null
+                          ? 'Deskripsikan luka secara singkat...'
                           : 'Ketik kondisi...',
                       hintStyle: const TextStyle(color: AppColors.textGrey),
                       filled: true,
@@ -2536,48 +2576,36 @@ class _BottomInputBar extends StatelessWidget {
                     ),
                   ),
                 ),
-                IconButton(
-                  onPressed: () async {
-                    if (isGenerating) {
-                      await onStopGenerating();
-                      return;
-                    }
-                    await onSend();
-                  },
-                  tooltip: isGenerating
-                      ? (isStoppingGeneration
-                            ? 'Sedang menghentikan'
-                            : 'Stop generate')
-                      : 'Kirim pesan',
-                  icon: isStoppingGeneration
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: AppColors.red,
-                          ),
-                        )
-                      : Icon(
-                          isGenerating ? Icons.stop_circle : Icons.send,
-                          color: isGenerating ? AppColors.red : AppColors.navy,
-                        ),
+                const SizedBox(width: 6),
+                _SendOrStopButton(
+                  isGenerating: isGenerating,
+                  isStoppingGeneration: isStoppingGeneration,
+                  onSend: onSend,
+                  onStop: onStopGenerating,
                 ),
               ],
             ),
+            const SizedBox(height: 4),
+            const Divider(height: 1, thickness: 0.5, color: Color(0xFFE8EDF5)),
             const SizedBox(height: 6),
             Row(
               children: [
-                TextButton.icon(
+                FilledButton.icon(
                   onPressed: isBusy ? null : () async => onEmergency(),
-                  style: TextButton.styleFrom(
-                    foregroundColor: AppColors.red,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.red,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: AppColors.red.withValues(alpha: 0.45),
+                    disabledForegroundColor: Colors.white.withValues(alpha: 0.8),
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 6,
+                      horizontal: 14,
+                      vertical: 8,
                     ),
                     minimumSize: Size.zero,
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                   icon: isBusy
                       ? const SizedBox(
@@ -2585,33 +2613,66 @@ class _BottomInputBar extends StatelessWidget {
                           height: 14,
                           child: CircularProgressIndicator(
                             strokeWidth: 2,
-                            color: AppColors.red,
+                            color: Colors.white,
                           ),
                         )
-                      : const Icon(Icons.emergency_share_outlined, size: 16),
-                  label: Text(isBusy ? 'Menyiapkan...' : 'Darurat'),
+                      : const Icon(Icons.emergency_share_rounded, size: 16),
+                  label: Text(
+                    isBusy ? 'Menyiapkan...' : 'Darurat',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
                 ),
                 const Spacer(),
                 Flexible(
-                  child: TextButton.icon(
-                    onPressed: onEditEmergencyContact,
-                    style: TextButton.styleFrom(
-                      foregroundColor: AppColors.navy,
+                  child: GestureDetector(
+                    onTap: onEditEmergencyContact,
+                    child: Container(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
+                        horizontal: 10,
                         vertical: 6,
                       ),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    icon: const Icon(Icons.contact_phone_outlined, size: 16),
-                    label: Text(
-                      hasEmergencyContact
-                          ? emergencyContactName!
-                          : 'Kontak darurat',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12),
+                      decoration: BoxDecoration(
+                        color: hasEmergencyContact
+                            ? AppColors.navy.withValues(alpha: 0.06)
+                            : AppColors.urgencyYellow.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: hasEmergencyContact
+                              ? AppColors.navy.withValues(alpha: 0.12)
+                              : AppColors.urgencyYellow.withValues(alpha: 0.35),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            hasEmergencyContact
+                                ? Icons.contact_phone_outlined
+                                : Icons.person_add_outlined,
+                            size: 14,
+                            color: hasEmergencyContact
+                                ? AppColors.navy
+                                : AppColors.urgencyYellow,
+                          ),
+                          const SizedBox(width: 6),
+                          Flexible(
+                            child: Text(
+                              hasEmergencyContact
+                                  ? emergencyContactName!
+                                  : 'Tambah kontak',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: hasEmergencyContact
+                                    ? AppColors.navy
+                                    : AppColors.urgencyYellow,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -2627,5 +2688,94 @@ class _BottomInputBar extends StatelessWidget {
     final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
     final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '$minutes:$seconds';
+  }
+}
+
+class _InputActionIcon extends StatelessWidget {
+  final Future<void> Function() onPressed;
+  final IconData icon;
+  final String tooltip;
+  final Color color;
+
+  const _InputActionIcon({
+    required this.onPressed,
+    required this.icon,
+    required this.tooltip,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: () async => onPressed(),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, size: 20, color: color),
+        ),
+      ),
+    );
+  }
+}
+
+class _SendOrStopButton extends StatelessWidget {
+  final bool isGenerating;
+  final bool isStoppingGeneration;
+  final Future<void> Function() onSend;
+  final Future<void> Function() onStop;
+
+  const _SendOrStopButton({
+    required this.isGenerating,
+    required this.isStoppingGeneration,
+    required this.onSend,
+    required this.onStop,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (isStoppingGeneration) {
+      return Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: AppColors.red.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Center(
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.red),
+          ),
+        ),
+      );
+    }
+
+    return InkWell(
+      onTap: () async => isGenerating ? onStop() : onSend(),
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: isGenerating
+              ? AppColors.red.withValues(alpha: 0.1)
+              : AppColors.navy,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(
+          isGenerating ? Icons.stop_rounded : Icons.send_rounded,
+          size: 18,
+          color: isGenerating ? AppColors.red : Colors.white,
+        ),
+      ),
+    );
   }
 }
