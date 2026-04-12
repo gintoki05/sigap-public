@@ -348,7 +348,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
       ),
     );
 
-    if (confirmed != true || !mounted) {
+    if (confirmed != true || !context.mounted) {
       return;
     }
 
