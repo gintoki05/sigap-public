@@ -170,6 +170,7 @@ class _HomeTabState extends State<_HomeTab> {
   double? _latitude;
   double? _longitude;
   String? _locationName;
+  bool _isFetchingLocation = false;
 
   // --- Date ---
   String _formattedDate = '';
@@ -250,10 +251,36 @@ class _HomeTabState extends State<_HomeTab> {
   }
 
   Future<void> _refreshCoordinates() async {
-    final permission = await Geolocator.checkPermission();
+    if (_isFetchingLocation) return;
+    
+    if (mounted) {
+      setState(() {
+        _isFetchingLocation = true;
+      });
+    }
+
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (mounted) setState(() => _isFetchingLocation = false);
+      await Geolocator.openLocationSettings();
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) setState(() => _isFetchingLocation = false);
+      await Geolocator.openAppSettings();
+      return;
+    }
+
     final granted = permission == LocationPermission.always ||
         permission == LocationPermission.whileInUse;
     if (!granted) {
+      if (mounted) setState(() => _isFetchingLocation = false);
       return;
     }
 
@@ -287,6 +314,12 @@ class _HomeTabState extends State<_HomeTab> {
       // Jika posisi live belum didapat, biarkan last known position tetap tampil.
       if (_latitude != null && _longitude != null) {
         _updateLocationName(_latitude!, _longitude!);
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isFetchingLocation = false;
+        });
       }
     }
   }
@@ -390,51 +423,65 @@ class _HomeTabState extends State<_HomeTab> {
                   ),
                   const SizedBox(height: 6),
                   // ── Tanggal + Koordinat ──
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(
-                        Icons.calendar_today_rounded,
-                        size: 11,
-                        color: AppColors.textGrey,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        _formattedDate,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: AppColors.textGrey,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      if (_latitude != null && _longitude != null) ...[
-                        const SizedBox(width: 10),
-                        Container(
-                          width: 1,
-                          height: 10,
-                          color: const Color(0xFFDDDDDD),
-                        ),
-                        const SizedBox(width: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: AppColors.navy.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
                         const Icon(
-                          Icons.location_pin,
+                          Icons.calendar_today_rounded,
                           size: 11,
                           color: AppColors.textGrey,
                         ),
                         const SizedBox(width: 4),
+                        Text(
+                          _formattedDate,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AppColors.textGrey,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Container(
+                          width: 1,
+                          height: 10,
+                          color: const Color(0xFFCCCCCC),
+                        ),
+                        const SizedBox(width: 10),
+                        GestureDetector(
+                          onTap: _isFetchingLocation ? null : _refreshCoordinates,
+                          child: Icon(
+                            _isFetchingLocation ? Icons.schedule : Icons.my_location,
+                            size: 12,
+                            color: AppColors.navy,
+                          ),
+                        ),
+                        const SizedBox(width: 4),
                         Flexible(
-                          child: Text(
-                            _locationName ?? '${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: AppColors.textGrey,
-                              fontWeight: FontWeight.w500,
+                          child: GestureDetector(
+                            onTap: _isFetchingLocation ? null : _refreshCoordinates,
+                            child: Text(
+                              _isFetchingLocation
+                                  ? 'Mencari lokasi...'
+                                  : (_latitude != null
+                                      ? (_locationName ?? '${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}')
+                                      : 'Cari lokasi saya'),
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: _latitude == null ? AppColors.navy : AppColors.textGrey,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ),
                       ],
-                    ],
+                    ),
                   ),
 
                   const SizedBox(height: 20),
@@ -477,6 +524,13 @@ class _HomeTabState extends State<_HomeTab> {
                                 bottomRight: Radius.circular(18),
                                 bottomLeft: Radius.circular(4),
                               ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: AppColors.navy.withValues(alpha: 0.08),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
                             ),
                             child: const Text(
                               'Halo! Saya SIGAP.\nSaya bisa membantu panduan pertolongan pertama. Ceritakan apa yang terjadi.',
@@ -546,8 +600,15 @@ class _HomeTabState extends State<_HomeTab> {
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
-                        color: AppColors.navy.withValues(alpha: 0.08),
+                        color: AppColors.navy.withValues(alpha: 0.04),
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.navy.withValues(alpha: 0.05),
+                          blurRadius: 15,
+                          offset: const Offset(0, 6),
+                        ),
+                      ],
                     ),
                     child: Row(
                       children: [
