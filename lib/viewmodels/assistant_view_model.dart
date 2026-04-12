@@ -1096,6 +1096,7 @@ Tugas Anda:
 4. Untuk luka bakar, pendarahan, tersedak, kejang, pingsan, atau nyeri dada, berikan langkah yang singkat dan jelas.
 5. Jangan gunakan markdown tebal, bullet aneh, atau paragraf panjang.
 6. Untuk foto atau gejala yang ambigu, katakan dengan jujur bahwa AI bisa salah dan pemeriksaan tenaga medis tetap penting.
+7. PENTING: Gunakan bahasa yang sama dengan bahasa yang digunakan pada "Laporan user" atau instruksi bahasa yang diminta oleh user. Jika user meminta "answer in english", maka SELURUH balasan Anda (SUMMARY, WARNING, STEPS, QUESTIONS) WAJIB dalam bahasa Inggris.
 
 Balas WAJIB dengan format persis seperti ini:
 URGENCY: GREEN atau YELLOW atau RED

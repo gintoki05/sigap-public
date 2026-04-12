@@ -223,3 +223,136 @@ Contoh yang salah:
 ## 14. Ringkasan Satu Kalimat
 
 Untuk SIGAP, agent yang baik harus berpikir seperti engineer produk yang disiplin: verifikasi dulu, cocokkan dengan repo, gunakan Linear untuk arah kerja, dan jangan pernah menutupi ketidakpastian teknis dengan jawaban yang terdengar yakin.
+
+## 15. Product Context & Vision
+
+*(Konteks produk di bawah ini wajib dipahami oleh agent agar keputusan dan panduan teknis selalu sejalan dengan visi, skenario pengguna nyata, dan target rilis aplikasi).*
+
+**SIGAP: An Offline Emergency Companion for Families on the Move**
+
+Helping families take the first safe action in a medical emergency, even when signal cannot be trusted.
+
+**Track:** Health & Sciences  
+**Special Technology Track:** LiteRT  
+
+### The Problem
+In Indonesia, emergencies rarely happen in ideal conditions. They happen at home, on the roadside, and during long-distance travel when families are tired, roads are crowded, and connectivity may be unreliable.
+
+This becomes especially visible during mudik, Indonesia’s annual Eid homecoming season. The Ministry of Transportation estimated 146.48 million traveler movements during the 2025 mudik period, showing just how many families are on the road at the same time.
+
+For many travelers, the problem is not only distance. It is uncertainty.
+
+Indonesia still has meaningful connectivity gaps. Based on 2024 BPS data, 3,117 villages/subdistricts were still not covered by cellular signal. Even when internet exists, it cannot always be assumed to be stable or accessible in a stressful, time-sensitive situation.
+
+In a health emergency, that gap matters. People often do not freeze because they do not care, but because they do not know what to do first. The need for basic emergency response knowledge is significant enough that Indonesia’s Ministry of Health provides a dedicated Basic Life Support training curriculum for the general public, explicitly aiming to help ordinary citizens give first aid in cases of illness, injury, or accidents.
+
+Unsafe first-aid myths are also a real risk. Indonesia’s Ministry of Health has explicitly warned against using toothpaste on burns, explaining that it can worsen injury, increase irritation, and raise infection risk. In a real emergency, online information may exist, but search results are not the same as calm, structured, immediate guidance.
+
+A Jakarta emergency-care study also reported a median ambulance response time of 24 minutes, highlighting that in emergencies there can be a meaningful gap between the onset of a problem and professional help arriving.
+
+SIGAP is built for that first critical window: the moment before a family can reliably reach formal help, when what they need most is the next safe action.
+
+### The Solution
+SIGAP is an Android offline emergency companion powered by Gemma 4 through `flutter_gemma` and LiteRT. It is designed to help users stay calm and take safer first steps during a health-related emergency, even when internet access is weak or unavailable. Its current product focus is first-step emergency guidance, not diagnosis and not full medical decision-making.
+
+SIGAP is designed around a simple idea:  
+*In an emergency, people do not need more information. They need the next safe action.*
+
+Instead of acting like a generic chatbot, SIGAP is designed to turn panic, fragmented input, and uncertain conditions into structured first-step guidance.
+
+In the current product direction, SIGAP centers on:
+- offline first-aid guidance
+- multimodal reporting through chat, voice, and photo
+- urgency-based active guidance
+- spoken instructions with text-to-speech
+- emergency coordination support through GPS and WhatsApp
+- local retrieval for first-aid protocols and myth correction
+
+### Hero Scenario: Mudik Without Signal
+The strongest hackathon demo scenario for SIGAP is mudik.
+
+A family is traveling long distance during the Eid homecoming season. While on the road, their child starts vomiting repeatedly and becomes weak. They are in an area with poor signal. They cannot rely on search, messaging, or video tutorials. They need help that works immediately on the phone they already hold.
+
+That is where SIGAP becomes meaningful:
+1. The parent opens SIGAP.
+2. They describe the condition by voice, text, or photo.
+3. SIGAP responds fully offline on-device.
+4. It provides safe, structured first-step guidance and highlights red flags.
+5. If escalation is needed, the app helps the user prepare to contact help and share location once connectivity is available.
+
+This is not just a dramatic story. It is practical, local, and easy to understand in the Indonesian context.
+
+### Why This Matters in Indonesia
+Indonesia is a strong fit for SIGAP because the product is designed around conditions many families already experience:
+- long travel distances
+- variable signal quality outside major urban centers
+- moments of panic where reading articles is unrealistic
+- the need for practical and immediate guidance in Bahasa Indonesia
+
+Mudik concentrates all of those realities into one familiar national moment. With 146.48 million projected traveler movements in 2025, the scale alone makes this a meaningful scenario for a health-focused emergency tool.
+
+At the same time, Indonesia already has formal emergency escalation pathways. The Ministry of Health operates PSC 119 as a rapid-response emergency health service. During the 2025 mudik period, the Ministry also activated more than 2,500 health service posts, more than 24,000 reserve health personnel, and 376 PSC 119 units across Indonesia. SIGAP is not intended to replace that system. It is designed to help families take safer first steps before they can reach a health post, contact emergency services, or regain signal.
+
+That is why SIGAP is meaningful in Indonesia: it does not compete with the formal emergency system. It fills the gap before the formal system becomes reachable.
+
+### Why Gemma 4, flutter_gemma, and LiteRT
+SIGAP depends on one key technical requirement:  
+*the assistant must still work when the network does not.*
+
+That is why the application is built around on-device inference using Gemma 4, `flutter_gemma`, and LiteRT.
+
+- **True on-device operation:** The core assistant runs directly inside the Android app. After setup, the main emergency guidance flow remains useful without internet access. This is not a cloud product with an offline fallback message. It is an offline-first product by architecture.
+- **Multimodal input in one mobile experience:** In emergencies, users do not always want to type. SIGAP supports text, voice, and photo input because panic makes it harder to structure information cleanly. Multimodal interaction reduces that burden.
+- **Local knowledge retrieval:** SIGAP combines generative guidance with local retrieval. A device-side knowledge base stores first-aid protocols and myth-correction content so the assistant can reinforce safer, more conservative guidance even without network access.
+- **Offline-first privacy:** Health-related inputs are sensitive. Keeping inference on-device means users do not need to send their emergency descriptions, voice inputs, or images to the cloud just to receive useful first-step guidance.
+
+### What Makes SIGAP Different
+SIGAP is not designed to be a generic medical chatbot. Its differentiators are:
+1. **It works when connectivity cannot be trusted:** The value of SIGAP is highest in the exact moment cloud tools become less dependable: when a family is stressed, signal is weak, and time matters.
+2. **It accepts messy real-world emergency input:** Users can speak naturally, type short symptom descriptions, or provide a photo instead of having to form a clean search query.
+3. **It is action-oriented, not search-oriented:** SIGAP is built to provide safe next steps, not just explanations. Its purpose is to help users move from panic to action.
+4. **It supports escalation, not false certainty:** SIGAP’s role is to help bridge the first uncertain minutes until professional care, emergency services, or a health facility can be reached.
+
+### Current Implementation
+The current prototype is already centered on first-aid guidance rather than a broad “travel assistant” experience. Based on the current codebase, the following building blocks are already implemented or integrated in the prototype:
+- `flutter_gemma` integration for Gemma 4 with LiteRT-LM artifacts
+- model selection and download/import flow for local models
+- active guidance UI in Flutter
+- multimodal pathways for text, voice, and photo input
+- urgency states for guidance output
+- offline-capable text-to-speech playback in Bahasa Indonesia
+- GPS access and WhatsApp deep link for emergency messaging
+- local RAG storage using SQLite and vector retrieval fallback
+
+The strongest verified value of the current prototype is this:  
+*helping users take the first safe action during a health-related emergency when signal is weak or unavailable.*
+
+### Safety-First Design
+SIGAP is not positioned as a doctor replacement.
+The assistant is designed to:
+- provide conservative first-step guidance
+- highlight red flags clearly
+- encourage escalation to medical help when risk is high
+- avoid overclaiming certainty
+- avoid presenting first-step guidance as diagnosis
+
+This matters because Indonesia already has formal emergency pathways such as PSC 119, and the correct role for SIGAP is to act as a bridge until those services can be reached. In product terms, the goal is not diagnosis. The goal is safer action during the first uncertain minutes.
+
+### Product Direction
+The broader product identity remains intentionally broad: SIGAP is meant to be relevant for emergencies at home, on the road, and in everyday life. For this hackathon, however, the most compelling and emotionally clear demo context is mudik, because it makes the offline value obvious.
+
+One future extension is a Mudik Pack: an offline contextual layer for travel situations, potentially including emergency contacts, travel-specific first-aid guidance, and important offline references for long-distance journeys. In the current repository, this remains a product direction rather than a completed feature.
+
+### Key Insight
+The core insight behind SIGAP is simple:  
+*In an emergency, people do not need more information. They need the next safe action.*
+
+By combining Gemma 4, LiteRT, local retrieval, multimodal input, and offline emergency coordination inside one Android experience, SIGAP turns a phone into a practical emergency companion that remains useful even when signal cannot be trusted.
+
+### Conclusion
+SIGAP is an offline emergency companion built for real-world uncertainty.
+
+Its identity is broad enough for everyday emergencies, but its strongest demo story is mudik: a family on the road, a child becoming sick, signal disappearing, and a phone that still helps.
+
+That is the promise of SIGAP:  
+*ready before help arrives, even when the internet does not.*
