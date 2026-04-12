@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 import 'package:provider/provider.dart';
 import '../core/constants.dart';
 import 'assistant_screen.dart';
@@ -168,6 +169,7 @@ class _HomeTabState extends State<_HomeTab> {
   StreamSubscription<ServiceStatus>? _locationServiceSub;
   double? _latitude;
   double? _longitude;
+  String? _locationName;
 
   // --- Date ---
   String _formattedDate = '';
@@ -209,10 +211,16 @@ class _HomeTabState extends State<_HomeTab> {
   }
 
   Future<void> _initGps() async {
-    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    final permission = await Geolocator.checkPermission();
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    LocationPermission permission = await Geolocator.checkPermission();
+    
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    
     final granted = permission == LocationPermission.always ||
         permission == LocationPermission.whileInUse;
+    
     if (mounted) setState(() => _gpsActive = serviceEnabled && granted);
 
     if (serviceEnabled && granted) {
@@ -221,16 +229,21 @@ class _HomeTabState extends State<_HomeTab> {
 
     _locationServiceSub = Geolocator.getServiceStatusStream().listen((status) async {
       final isEnabled = status == ServiceStatus.enabled;
+      final currentPermission = await Geolocator.checkPermission();
+      final currentGranted = currentPermission == LocationPermission.always ||
+          currentPermission == LocationPermission.whileInUse;
+          
       if (mounted) {
-        setState(() => _gpsActive = isEnabled);
+        setState(() => _gpsActive = isEnabled && currentGranted);
       }
 
-      if (isEnabled) {
+      if (isEnabled && currentGranted) {
         await _refreshCoordinates();
       } else if (mounted) {
         setState(() {
           _latitude = null;
           _longitude = null;
+          _locationName = null;
         });
       }
     });
@@ -259,8 +272,8 @@ class _HomeTabState extends State<_HomeTab> {
     try {
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.reduced,
-          timeLimit: Duration(seconds: 8),
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
         ),
       );
       if (mounted) {
@@ -268,9 +281,32 @@ class _HomeTabState extends State<_HomeTab> {
           _latitude = pos.latitude;
           _longitude = pos.longitude;
         });
+        _updateLocationName(pos.latitude, pos.longitude);
       }
     } catch (_) {
       // Jika posisi live belum didapat, biarkan last known position tetap tampil.
+      if (_latitude != null && _longitude != null) {
+        _updateLocationName(_latitude!, _longitude!);
+      }
+    }
+  }
+
+  Future<void> _updateLocationName(double lat, double lon) async {
+    try {
+      final placemarks = await placemarkFromCoordinates(lat, lon);
+      if (placemarks.isNotEmpty) {
+        final place = placemarks.first;
+        final name = [place.subLocality, place.locality, place.administrativeArea]
+            .where((s) => s != null && s.isNotEmpty)
+            .join(', ');
+        if (mounted) {
+          setState(() {
+            _locationName = name.isNotEmpty ? name : place.name;
+          });
+        }
+      }
+    } catch (e) {
+      // Ignore reverse geocoding errors, we still have coordinates
     }
   }
 
@@ -297,20 +333,25 @@ class _HomeTabState extends State<_HomeTab> {
                   const SizedBox(height: 20),
 
                   // ── Logo + nama app ──
-                  Image.asset(
-                    'assets/logo/logo-sigap-transparant.png',
-                    width: 64,
-                    height: 64,
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'SIGAP',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w900,
-                      color: AppColors.navy,
-                      letterSpacing: 2,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Image.asset(
+                        'assets/logo/logo-sigap-transparant.png',
+                        width: 42,
+                        height: 42,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'SIGAP',
+                        style: TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.navy,
+                          letterSpacing: 2,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 4),
                   const Text(
@@ -327,12 +368,15 @@ class _HomeTabState extends State<_HomeTab> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      _StatusBadge(
-                        icon: _gpsActive ? Icons.location_on : Icons.location_off,
-                        label: 'GPS',
-                        color: _gpsActive
-                            ? const Color(0xFF2ECC71)
-                            : const Color(0xFFAAAAAA),
+                      GestureDetector(
+                        onTap: _initGps,
+                        child: _StatusBadge(
+                          icon: _gpsActive ? Icons.location_on : Icons.location_off,
+                          label: 'GPS',
+                          color: _gpsActive
+                              ? const Color(0xFF2ECC71)
+                              : const Color(0xFFAAAAAA),
+                        ),
                       ),
                       const SizedBox(width: 8),
                       _StatusBadge(
@@ -377,12 +421,16 @@ class _HomeTabState extends State<_HomeTab> {
                           color: AppColors.textGrey,
                         ),
                         const SizedBox(width: 4),
-                        Text(
-                          '${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AppColors.textGrey,
-                            fontWeight: FontWeight.w500,
+                        Flexible(
+                          child: Text(
+                            _locationName ?? '${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: AppColors.textGrey,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ),
                       ],
