@@ -42,11 +42,15 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     'Ukuran atau luas kira-kira...',
     'Korban sadar dan bisa merespons',
   ];
+  static const double _autoScrollThreshold = 120;
 
   late final TextEditingController _controller;
+  ScrollController? _messagesScrollController;
   AssistantPhotoAttachment? _pendingPhoto;
   bool _hasAutoStartedVoice = false;
   bool _hasAutoOpenedPhoto = false;
+  bool _shouldAutoScrollMessages = true;
+  int _lastMessageCount = 0;
 
   @override
   void initState() {
@@ -54,10 +58,14 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     _controller = TextEditingController(
       text: widget.initialQuery?.trim() ?? '',
     );
+    _ensureMessagesScrollController();
   }
 
   @override
   void dispose() {
+    _messagesScrollController
+      ?..removeListener(_handleScroll)
+      ..dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -74,8 +82,10 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
             viewModel.gemmaService.state == GemmaServiceState.checking);
     final showAssistantShell =
         viewModel.isModelReady || shouldKeepAssistantScrollable;
+    final messagesScrollController = _ensureMessagesScrollController();
     _maybeAutoStartVoice(viewModel);
     _maybeAutoOpenPhoto(viewModel);
+    _maybeAutoScrollMessages(viewModel);
 
     return Scaffold(
       appBar: AppBar(
@@ -121,6 +131,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                           serviceStatus: viewModel.serviceStatus,
                         )
                       : ListView.builder(
+                          controller: messagesScrollController,
                           padding: const EdgeInsets.all(16),
                           itemCount: viewModel.messages.length,
                           itemBuilder: (context, index) {
@@ -256,6 +267,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
       return;
     }
 
+    _dismissActiveInput(context);
     _controller.clear();
     _clearPendingPhoto();
     if (pendingPhoto != null) {
@@ -303,6 +315,54 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
       text: nextText,
       selection: TextSelection.collapsed(offset: nextText.length),
     );
+  }
+
+  ScrollController _ensureMessagesScrollController() {
+    return _messagesScrollController ??=
+        ScrollController()..addListener(_handleScroll);
+  }
+
+  void _handleScroll() {
+    final controller = _messagesScrollController;
+    if (controller == null || !controller.hasClients) {
+      return;
+    }
+
+    final position = controller.position;
+    final distanceToBottom = position.maxScrollExtent - position.pixels;
+    _shouldAutoScrollMessages = distanceToBottom <= _autoScrollThreshold;
+  }
+
+  void _maybeAutoScrollMessages(AssistantViewModel viewModel) {
+    final hasNewMessage = viewModel.messages.length != _lastMessageCount;
+    _lastMessageCount = viewModel.messages.length;
+
+    if (!hasNewMessage && !viewModel.isGeneratingResponse) {
+      return;
+    }
+
+    if (!_shouldAutoScrollMessages && !hasNewMessage) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final controller = _messagesScrollController;
+      if (!mounted || controller == null || !controller.hasClients) {
+        return;
+      }
+
+      final targetOffset = controller.position.maxScrollExtent;
+      if (hasNewMessage) {
+        controller.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+        return;
+      }
+
+      controller.jumpTo(targetOffset);
+    });
   }
 
   Future<void> _applyFollowUpQuestion(String question) async {
