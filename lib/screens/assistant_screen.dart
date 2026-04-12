@@ -135,6 +135,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                                 speechRate: viewModel.ttsSpeechRate,
                                 onReplay: () =>
                                     viewModel.replayGuidance(message.guidance!),
+                                onFollowUpTap: _applyFollowUpQuestion,
                                 onRegenerate: canRegenerateMessage
                                     ? viewModel.regenerateLatestResponse
                                     : null,
@@ -297,6 +298,18 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
   void _applyPhotoPrompt(String prompt) {
     final currentText = _controller.text.trim();
     final nextText = currentText.isEmpty ? prompt : '$currentText; $prompt';
+
+    _controller.value = TextEditingValue(
+      text: nextText,
+      selection: TextSelection.collapsed(offset: nextText.length),
+    );
+  }
+
+  Future<void> _applyFollowUpQuestion(String question) async {
+    final nextText = question.trim();
+    if (nextText.isEmpty) {
+      return;
+    }
 
     _controller.value = TextEditingValue(
       text: nextText,
@@ -1831,6 +1844,7 @@ class _GuidanceCard extends StatelessWidget {
     required this.message,
     required this.speechRate,
     required this.onReplay,
+    required this.onFollowUpTap,
     required this.onRegenerate,
     required this.onAdjustSpeed,
   });
@@ -1838,6 +1852,7 @@ class _GuidanceCard extends StatelessWidget {
   final AssistantMessage message;
   final double speechRate;
   final Future<void> Function() onReplay;
+  final Future<void> Function(String question) onFollowUpTap;
   final Future<void> Function()? onRegenerate;
   final Future<void> Function() onAdjustSpeed;
 
@@ -1934,32 +1949,22 @@ class _GuidanceCard extends StatelessWidget {
           ],
           if (guidance.followUpQuestions.isNotEmpty) ...[
             const SizedBox(height: 10),
-            Theme(
-              data: Theme.of(
-                context,
-              ).copyWith(dividerColor: Colors.transparent),
-              child: ExpansionTile(
-                tilePadding: EdgeInsets.zero,
-                childrenPadding: EdgeInsets.zero,
-                minTileHeight: 40,
-                dense: true,
-                title: const Text(
-                  'Pertanyaan lanjutan',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.navy,
-                  ),
-                ),
-                children: [
-                  const SizedBox(height: 4),
-                  for (final question in guidance.followUpQuestions) ...[
-                    _FollowUpQuestion(question: question),
-                    const SizedBox(height: 6),
-                  ],
-                ],
+            const Text(
+              'Pertanyaan lanjutan',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppColors.navy,
               ),
             ),
+            const SizedBox(height: 8),
+            for (final question in guidance.followUpQuestions) ...[
+              _FollowUpQuestion(
+                question: question,
+                onTap: () => onFollowUpTap(question),
+              ),
+              const SizedBox(height: 6),
+            ],
           ],
         ],
       ),
@@ -2103,40 +2108,54 @@ class _StepCard extends StatelessWidget {
 }
 
 class _FollowUpQuestion extends StatelessWidget {
-  const _FollowUpQuestion({required this.question});
+  const _FollowUpQuestion({required this.question, required this.onTap});
 
   final String question;
+  final Future<void> Function() onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        onTap: () => onTap(),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.navy.withValues(alpha: 0.08)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(
-            Icons.help_outline_rounded,
-            color: AppColors.navy,
-            size: 18,
+        child: Ink(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.navy.withValues(alpha: 0.08)),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              question,
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.textDark,
-                height: 1.4,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(
+                Icons.help_outline_rounded,
+                color: AppColors.navy,
+                size: 18,
               ),
-            ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  question,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textDark,
+                    height: 1.4,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(
+                Icons.edit_outlined,
+                color: AppColors.navy,
+                size: 16,
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
