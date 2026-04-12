@@ -419,6 +419,22 @@ class AssistantViewModel extends ChangeNotifier {
         return;
       }
 
+      // Auto-detect varian model berdasarkan ukuran file
+      try {
+        final fileSize = File(sourcePath).lengthSync();
+        // E2B biasanya ~2.5 GB, E4B biasanya ~4.3 GB
+        // Threshold 3.2 GB
+        final isE4B = fileSize > 3.2 * 1024 * 1024 * 1024;
+        final detectedVariant =
+            isE4B ? SigapModelVariant.e4b : SigapModelVariant.e2b;
+
+        if (_gemmaService.selectedVariant != detectedVariant) {
+          await _gemmaService.selectModelVariant(detectedVariant);
+        }
+      } catch (_) {
+        // Abaikan bila tidak bisa membaca ukuran file, gunakan varian yang sedang terpilih
+      }
+
       _serviceStatus =
           'File dipilih. Menyalin ${_gemmaService.selectedModelLabel} ke penyimpanan aplikasi...';
       _notifySafely();

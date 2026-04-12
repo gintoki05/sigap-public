@@ -1510,25 +1510,48 @@ class _ModelSetupPanel extends StatelessWidget {
                   ),
                 ],
                 if (!service.isDownloading && isBusy && !isServiceBusy) ...[
-                  const SizedBox(height: 12),
-                  const Row(
-                    children: [
-                      SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: AppColors.navy.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: AppColors.navy.withValues(alpha: 0.12),
                       ),
-                      SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          'Menyiapkan impor model. Mohon tunggu sebentar...',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textGrey,
+                    ),
+                    child: const Column(
+                      children: [
+                        SizedBox(
+                          width: 36,
+                          height: 36,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 3.5,
+                            valueColor: AlwaysStoppedAnimation<Color>(AppColors.navy),
                           ),
                         ),
-                      ),
-                    ],
+                        SizedBox(height: 16),
+                        Text(
+                          'Mengimpor File Model...',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.navy,
+                          ),
+                        ),
+                        SizedBox(height: 8),
+                        Text(
+                          'Proses menyalin file ukuran besar (hingga >4GB) bisa memakan waktu beberapa menit.\nMohon tunggu dan jangan menutup layar.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textDark,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ],
