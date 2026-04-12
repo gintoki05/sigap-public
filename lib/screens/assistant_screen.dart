@@ -117,6 +117,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                 ? (viewModel.messages.isEmpty
                       ? _EmptyState(
                           inputMode: viewModel.inputMode,
+                          hasPendingPhoto: _pendingPhoto != null,
                           serviceStatus: viewModel.serviceStatus,
                         )
                       : ListView.builder(
@@ -184,16 +185,13 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
                   emergencyContactPhone: viewModel.emergencyContactPhone,
                   onEditEmergencyContact: () =>
                       _showEmergencyContactDialog(context, viewModel),
-                pendingPhoto: _pendingPhoto,
-                onRemovePhoto: _clearPendingPhoto,
-                onApplyPhotoPrompt: _applyPhotoPrompt,
-                isVisionBetaEnabled: viewModel.isVisionBetaEnabled,
-                visionState: viewModel.visionState,
-                onToggleVisionBeta: viewModel.setVisionBetaEnabled,
-                isRecordingVoice: viewModel.isRecordingVoice,
-                voiceRecordingDuration: viewModel.voiceRecordingDuration,
+                  pendingPhoto: _pendingPhoto,
+                  onRemovePhoto: _clearPendingPhoto,
+                  onApplyPhotoPrompt: _applyPhotoPrompt,
+                  isRecordingVoice: viewModel.isRecordingVoice,
+                  voiceRecordingDuration: viewModel.voiceRecordingDuration,
+                ),
               ),
-            ),
             ),
         ],
       ),
@@ -272,6 +270,10 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     final photo = await viewModel.capturePhoto();
     if (!mounted || photo == null) {
       return;
+    }
+
+    if (!viewModel.isVisionBetaEnabled) {
+      await viewModel.setVisionBetaEnabled(true);
     }
 
     setState(() {
@@ -1656,15 +1658,21 @@ class _MiniPill extends StatelessWidget {
 
 class _EmptyState extends StatelessWidget {
   final String inputMode;
+  final bool hasPendingPhoto;
   final String serviceStatus;
 
-  const _EmptyState({required this.inputMode, required this.serviceStatus});
+  const _EmptyState({
+    required this.inputMode,
+    required this.hasPendingPhoto,
+    required this.serviceStatus,
+  });
 
   @override
   Widget build(BuildContext context) {
     final prompt = switch (inputMode) {
       'voice' => 'Mode suara dipilih.\nModel akan dipakai setelah Gemma siap.',
-      'photo' => 'Mode foto dipilih.',
+      'photo' when hasPendingPhoto =>
+        'Foto sudah dilampirkan.\nTambahkan deskripsi singkat lalu kirim.',
       _ => 'Ceritakan kondisi darurat\natau tekan BICARA',
     };
 
@@ -1980,10 +1988,7 @@ class _GuidanceActionButton extends StatelessWidget {
         minimumSize: const Size(0, 36),
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         visualDensity: VisualDensity.compact,
-        textStyle: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
+        textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
     );
@@ -2147,9 +2152,6 @@ class _BottomInputBar extends StatelessWidget {
   final AssistantPhotoAttachment? pendingPhoto;
   final VoidCallback onRemovePhoto;
   final ValueChanged<String> onApplyPhotoPrompt;
-  final bool isVisionBetaEnabled;
-  final AssistantVisionState visionState;
-  final Future<void> Function(bool value) onToggleVisionBeta;
   final bool isRecordingVoice;
   final Duration voiceRecordingDuration;
 
@@ -2166,9 +2168,6 @@ class _BottomInputBar extends StatelessWidget {
     required this.pendingPhoto,
     required this.onRemovePhoto,
     required this.onApplyPhotoPrompt,
-    required this.isVisionBetaEnabled,
-    required this.visionState,
-    required this.onToggleVisionBeta,
     required this.isRecordingVoice,
     required this.voiceRecordingDuration,
   });
@@ -2187,390 +2186,275 @@ class _BottomInputBar extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.background,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: AppColors.navy.withValues(alpha: 0.08),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  isVisionBetaEnabled
-                      ? Icons.visibility_outlined
-                      : Icons.visibility_off_outlined,
-                  size: 18,
-                  color: AppColors.navy,
+            if (pendingPhoto != null)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Analisis Foto Beta',
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.navy,
-                        ),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: AppColors.navy.withValues(alpha: 0.08),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.memory(
+                        pendingPhoto!.bytes,
+                        width: 44,
+                        height: 44,
+                        fit: BoxFit.cover,
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        switch (visionState) {
-                          AssistantVisionState.disabled =>
-                            'Nonaktif. Foto dibantu lewat deskripsi.',
-                          AssistantVisionState.enabled =>
-                            'Aktif. SIGAP mencoba membaca foto.',
-                          AssistantVisionState.tryingVision =>
-                            'SIGAP sedang membaca foto...',
-                          AssistantVisionState.visionFailedFallback =>
-                            'Foto belum bisa dibaca. Pakai deskripsi teks.',
-                        },
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Foto siap dikirim',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.navy,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            pendingPhoto!.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textGrey,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: onRemovePhoto,
+                      icon: const Icon(
+                        Icons.close_rounded,
+                        color: AppColors.textGrey,
+                      ),
+                      tooltip: 'Hapus foto',
+                    ),
+                  ],
+                ),
+              ),
+            if (isRecordingVoice)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.red.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.red.withValues(alpha: 0.18),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.mic, size: 18, color: AppColors.red),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Merekam suara ${_formatDuration(voiceRecordingDuration)}. Tekan mikrofon lagi untuk kirim.',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          fontSize: 11,
-                          color: AppColors.textGrey,
-                          height: 1.2,
+                          fontSize: 12,
+                          color: AppColors.textDark,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                    ],
+                    ),
+                  ],
+                ),
+              ),
+            if (pendingPhoto != null)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                decoration: BoxDecoration(
+                  color: AppColors.background,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: AppColors.navy.withValues(alpha: 0.08),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Transform.scale(
-                  scale: 0.85,
-                  child: Switch(
-                    value: isVisionBetaEnabled,
-                    onChanged: (value) {
-                      onToggleVisionBeta(value);
-                    },
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.medical_information_outlined,
+                          size: 18,
+                          color: AppColors.navy,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'SIGAP akan mencoba membaca foto luka ini. Tetap tambahkan deskripsi singkat agar hasil lebih aman jika visual kurang jelas atau perlu fallback.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textGrey,
+                              height: 1.4,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: _AssistantScreenBodyState
+                            ._photoDescriptionPrompts
+                            .map(
+                              (prompt) => Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ActionChip(
+                                  label: Text(prompt),
+                                  labelStyle: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.navy,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  backgroundColor: Colors.white,
+                                  materialTapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  visualDensity: VisualDensity.compact,
+                                  side: BorderSide(
+                                    color: AppColors.navy.withValues(
+                                      alpha: 0.12,
+                                    ),
+                                  ),
+                                  onPressed: () => onApplyPhotoPrompt(prompt),
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                IconButton(
+                  onPressed: () async => onVoice(),
+                  icon: Icon(
+                    isRecordingVoice ? Icons.stop_circle : Icons.mic,
+                    color: isRecordingVoice ? AppColors.red : AppColors.navy,
                   ),
+                  tooltip: isRecordingVoice
+                      ? 'Stop dan kirim rekaman'
+                      : 'Rekam suara',
+                ),
+                IconButton(
+                  onPressed: () async => onPhoto(),
+                  icon: const Icon(Icons.camera_alt, color: AppColors.navy),
+                ),
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    keyboardType: TextInputType.multiline,
+                    textCapitalization: TextCapitalization.sentences,
+                    minLines: 1,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      hintText: pendingPhoto != null
+                          ? 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm. Tolong cek apakah tampak perlu tindakan cepat.'
+                          : 'Ketik kondisi...',
+                      hintStyle: const TextStyle(color: AppColors.textGrey),
+                      filled: true,
+                      fillColor: AppColors.background,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(18),
+                        borderSide: BorderSide.none,
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: () async => onSend(),
+                  icon: const Icon(Icons.send, color: AppColors.navy),
                 ),
               ],
             ),
-          ),
-          if (pendingPhoto != null) ...[
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: AppColors.navy.withValues(alpha: 0.08),
-                ),
-              ),
-              child: Row(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: Image.memory(
-                      pendingPhoto!.bytes,
-                      width: 44,
-                      height: 44,
-                      fit: BoxFit.cover,
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: isBusy ? null : () async => onEmergency(),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.red,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
                     ),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Foto siap dikirim',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.navy,
+                  icon: isBusy
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: AppColors.red,
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          pendingPhoto!.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textGrey,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: onRemovePhoto,
-                    icon: const Icon(
-                      Icons.close_rounded,
-                      color: AppColors.textGrey,
-                    ),
-                    tooltip: 'Hapus foto',
-                  ),
-                ],
-              ),
-            ),
-          ],
-          if (isRecordingVoice)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppColors.red.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: AppColors.red.withValues(alpha: 0.18),
+                        )
+                      : const Icon(Icons.emergency_share_outlined, size: 16),
+                  label: Text(isBusy ? 'Menyiapkan...' : 'Darurat'),
                 ),
-              ),
-              child: Row(
-                children: [
-                  const Icon(
-                    Icons.mic,
-                    size: 18,
-                    color: AppColors.red,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'Merekam suara ${_formatDuration(voiceRecordingDuration)}. Tekan mikrofon lagi untuk kirim.',
+                const Spacer(),
+                Flexible(
+                  child: TextButton.icon(
+                    onPressed: onEditEmergencyContact,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.navy,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    icon: const Icon(Icons.contact_phone_outlined, size: 16),
+                    label: Text(
+                      hasEmergencyContact
+                          ? emergencyContactName!
+                          : 'Kontak darurat',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textDark,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          Row(
-            children: [
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: isBusy ? null : onEmergency,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppColors.red,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        isBusy
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(
-                                Icons.emergency_share_outlined,
-                                size: 18,
-                                color: Colors.white,
-                              ),
-                        const SizedBox(width: 8),
-                        Text(
-                          isBusy ? 'Menyiapkan...' : 'Darurat',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
+                      style: const TextStyle(fontSize: 12),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: AppColors.navy.withValues(alpha: 0.08),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.contact_phone_outlined,
-                        size: 16,
-                        color: AppColors.navy,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          hasEmergencyContact
-                              ? 'Kontak: ${emergencyContactName!} • ${emergencyContactPhone!}'
-                              : 'Kontak darurat belum disimpan',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textGrey,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: onEditEmergencyContact,
-                        style: TextButton.styleFrom(
-                          minimumSize: Size.zero,
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        child: const Text('Ubah'),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          if (pendingPhoto != null)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: AppColors.navy.withValues(alpha: 0.08),
-                ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(
-                        Icons.medical_information_outlined,
-                        size: 18,
-                        color: AppColors.navy,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          isVisionBetaEnabled
-                              ? 'SIGAP akan mencoba membaca foto luka ini dalam mode beta. Tetap tambahkan deskripsi singkat agar hasil lebih aman jika visual kurang jelas atau perlu fallback.'
-                              : 'Tambahkan deskripsi singkat. SIGAP masih memakai teks Anda, bukan analisis visual otomatis.',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.textGrey,
-                            height: 1.4,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: _AssistantScreenBodyState
-                          ._photoDescriptionPrompts
-                          .map(
-                            (prompt) => Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: ActionChip(
-                                label: Text(prompt),
-                                labelStyle: const TextStyle(
-                                  fontSize: 12,
-                                  color: AppColors.navy,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                backgroundColor: Colors.white,
-                                materialTapTargetSize:
-                                    MaterialTapTargetSize.shrinkWrap,
-                                visualDensity: VisualDensity.compact,
-                                side: BorderSide(
-                                  color: AppColors.navy.withValues(alpha: 0.12),
-                                ),
-                                onPressed: () => onApplyPhotoPrompt(prompt),
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              IconButton(
-                onPressed: () async => onVoice(),
-                icon: Icon(
-                  isRecordingVoice ? Icons.stop_circle : Icons.mic,
-                  color: isRecordingVoice ? AppColors.red : AppColors.navy,
-                ),
-                tooltip: isRecordingVoice
-                    ? 'Stop dan kirim rekaman'
-                    : 'Rekam suara',
-              ),
-              IconButton(
-                onPressed: () async => onPhoto(),
-                icon: const Icon(Icons.camera_alt, color: AppColors.navy),
-              ),
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  keyboardType: TextInputType.multiline,
-                  textCapitalization: TextCapitalization.sentences,
-                  minLines: 1,
-                  maxLines: 4,
-                  decoration: InputDecoration(
-                    hintText: pendingPhoto != null
-                        ? isVisionBetaEnabled
-                            ? 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm. Tolong cek apakah tampak perlu tindakan cepat.'
-                            : 'Contoh: Luka sayat di telapak tangan, berdarah ringan, sekitar 2 cm, korban sadar.'
-                        : 'Ketik kondisi darurat...',
-                    hintStyle: const TextStyle(color: AppColors.textGrey),
-                    filled: true,
-                    fillColor: AppColors.background,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(18),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                  ),
-                ),
-              ),
-              IconButton(
-                onPressed: () async => onSend(),
-                icon: const Icon(Icons.send, color: AppColors.navy),
-              ),
-            ],
+              ],
             ),
           ],
         ),
