@@ -90,7 +90,7 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'Asisten P3K',
+          'Asisten AI',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
@@ -102,6 +102,13 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
               icon: const Icon(Icons.storage_rounded),
               tooltip: 'Kelola model',
             ),
+          IconButton(
+            onPressed: viewModel.canStartNewSession
+                ? () => _confirmStartNewSession(context, viewModel)
+                : null,
+            icon: const Icon(Icons.restart_alt_rounded),
+            tooltip: 'Sesi baru',
+          ),
           IconButton(
             onPressed: viewModel.toggleTts,
             icon: Icon(
@@ -282,6 +289,53 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
     await viewModel.sendMessage(text);
   }
 
+  Future<void> _confirmStartNewSession(
+    BuildContext context,
+    AssistantViewModel viewModel,
+  ) async {
+    final hasDraft =
+        _controller.text.trim().isNotEmpty || _pendingPhoto != null;
+    final hasMessages = viewModel.messages.isNotEmpty;
+
+    if (!hasDraft && !hasMessages) {
+      await viewModel.startNewSession();
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Mulai sesi baru?'),
+        content: Text(
+          hasDraft
+              ? 'Percakapan yang sudah tampil dan draft yang belum terkirim akan dibersihkan.'
+              : 'Percakapan saat ini akan dibersihkan dan SIGAP mulai dari konteks kosong.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Batal'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Mulai baru'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    _dismissActiveInput(context);
+    _controller.clear();
+    _clearPendingPhoto();
+    _shouldAutoScrollMessages = true;
+    _lastMessageCount = 0;
+    await viewModel.startNewSession();
+  }
+
   Future<void> _pickPhoto(AssistantViewModel viewModel) async {
     final photo = await viewModel.capturePhoto();
     if (!mounted || photo == null) {
@@ -318,8 +372,8 @@ class _AssistantScreenBodyState extends State<_AssistantScreenBody> {
   }
 
   ScrollController _ensureMessagesScrollController() {
-    return _messagesScrollController ??=
-        ScrollController()..addListener(_handleScroll);
+    return _messagesScrollController ??= ScrollController()
+      ..addListener(_handleScroll);
   }
 
   void _handleScroll() {
@@ -2208,11 +2262,7 @@ class _FollowUpQuestion extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              const Icon(
-                Icons.edit_outlined,
-                color: AppColors.navy,
-                size: 16,
-              ),
+              const Icon(Icons.edit_outlined, color: AppColors.navy, size: 16),
             ],
           ),
         ),

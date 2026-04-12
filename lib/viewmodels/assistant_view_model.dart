@@ -226,6 +226,13 @@ class AssistantViewModel extends ChangeNotifier {
   bool get isStoppingGeneration => _isStoppingGeneration;
   bool get isRecordingVoice => _isRecordingVoice;
   Duration get voiceRecordingDuration => _voiceRecordingDuration;
+  bool get canStartNewSession =>
+      !_isSendingMessage &&
+      !_isSendingEmergency &&
+      !_isRecordingVoice &&
+      !_isImportingLocalModel &&
+      !isDownloading &&
+      !isDeleting;
   bool get hasEmergencyContact =>
       (_emergencyContactName?.trim().isNotEmpty ?? false) &&
       (_emergencyContactPhone?.trim().isNotEmpty ?? false);
@@ -287,6 +294,25 @@ class AssistantViewModel extends ChangeNotifier {
       _notifySafely();
     }
     await _speakGuidance(guidance);
+  }
+
+  Future<void> startNewSession() async {
+    if (!canStartNewSession) {
+      return;
+    }
+
+    await _ttsService.stop();
+    await _gemmaService.resetConversation();
+
+    _messages.clear();
+    _urgency = UrgencyLevel.green;
+    _lastGuidanceRequest = null;
+    _lastAssistantResponseIndex = null;
+    _isStoppingGeneration = false;
+    _stopGenerationRequested = false;
+    _serviceStatus =
+        'Sesi baru dimulai. Jelaskan kondisi korban saat ini agar SIGAP bisa membantu.';
+    _notifySafely();
   }
 
   Future<void> saveEmergencyContact({
