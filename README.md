@@ -1,5 +1,18 @@
 # SIGAP
 
+<p align="center">
+  <img src="assets/logo/logo-dengan-teks.png" alt="SIGAP logo" width="240">
+</p>
+
+<p align="center">
+  <img src="assets/logo/Gemma-4-logo.jpg" alt="Gemma 4 logo" width="180">
+</p>
+
+<p align="center">
+  <strong>Offline Emergency Companion for Android</strong><br>
+  Built with Flutter, Gemma 4, LiteRT-LM, and flutter_gemma
+</p>
+
 SIGAP is an offline-first Android emergency companion built with Flutter.
 It uses Gemma 4 through `flutter_gemma` and LiteRT-LM to provide
 structured first-step guidance when internet connectivity cannot be
