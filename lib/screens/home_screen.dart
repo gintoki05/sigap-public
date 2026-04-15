@@ -5,6 +5,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../core/constants.dart';
 import 'assistant_screen.dart';
 import 'education_screen.dart';
@@ -161,6 +162,50 @@ class _HomeTab extends StatefulWidget {
 }
 
 class _HomeTabState extends State<_HomeTab> {
+  static const List<_EmergencyHotline> _indonesiaEmergencyHotlines = [
+    _EmergencyHotline(
+      title: 'Nomor Darurat 112',
+      number: '112',
+      description: 'Layanan darurat terpadu untuk situasi genting umum.',
+      note: 'Ketersediaan 112 bergantung pada dukungan pemerintah daerah.',
+      icon: Icons.call_rounded,
+      color: Color(0xFF4A90D9),
+    ),
+    _EmergencyHotline(
+      title: 'Ambulans / PSC',
+      number: '119',
+      description: 'Darurat medis dan kebutuhan pertolongan kesehatan cepat.',
+      note: 'Gunakan saat korban butuh bantuan medis segera.',
+      icon: Icons.local_hospital_rounded,
+      color: AppColors.red,
+    ),
+    _EmergencyHotline(
+      title: 'Polisi',
+      number: '110',
+      description: 'Kecelakaan, kriminal, ancaman, atau butuh bantuan polisi.',
+      note: 'Layanan Polri resmi dan bebas biaya.',
+      icon: Icons.local_police_rounded,
+      color: AppColors.navy,
+    ),
+    _EmergencyHotline(
+      title: 'Pemadam Kebakaran',
+      number: '113',
+      description: 'Kebakaran rumah, kendaraan, bangunan, atau butuh evakuasi '
+          'awal terkait api dan asap.',
+      note: 'Di beberapa daerah, kebakaran juga bisa ditangani lewat 112.',
+      icon: Icons.local_fire_department_rounded,
+      color: Color(0xFFF77F00),
+    ),
+    _EmergencyHotline(
+      title: 'Basarnas',
+      number: '115',
+      description: 'Pencarian dan pertolongan untuk kondisi evakuasi atau SAR.',
+      note: 'Cocok untuk insiden hilang, tenggelam, atau medan sulit.',
+      icon: Icons.support_agent_rounded,
+      color: Color(0xFF2D6A4F),
+    ),
+  ];
+
   // --- Connectivity ---
   bool _isOnline = false;
   late StreamSubscription<List<ConnectivityResult>> _connectivitySub;
@@ -349,6 +394,25 @@ class _HomeTabState extends State<_HomeTab> {
     _connectivitySub.cancel();
     _locationServiceSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _callEmergencyHotline(_EmergencyHotline hotline) async {
+    final uri = Uri(
+      scheme: 'tel',
+      path: hotline.number,
+    );
+    final launched = await launchUrl(uri);
+    if (!mounted || launched) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Panggilan ke ${hotline.number} belum bisa dibuka di perangkat ini.',
+        ),
+      ),
+    );
   }
 
   @override
@@ -680,6 +744,76 @@ class _HomeTabState extends State<_HomeTab> {
                   ),
 
                   const SizedBox(height: 20),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Kontak penting Indonesia',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.navy,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Siap dipakai saat butuh ambulans, polisi, atau '
+                      'bantuan darurat lain.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textGrey,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  for (final hotline in _indonesiaEmergencyHotlines) ...[
+                    _EmergencyHotlineCard(
+                      hotline: hotline,
+                      onCall: () => _callEmergencyHotline(hotline),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF7E8),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: const Color(0xFFF3D9A4),
+                      ),
+                    ),
+                    child: const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: EdgeInsets.only(top: 1),
+                          child: Icon(
+                            Icons.info_outline_rounded,
+                            size: 18,
+                            color: Color(0xFF9A6700),
+                          ),
+                        ),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Nomor 112 belum aktif di semua kabupaten/kota. '
+                            'Jika tidak terhubung, gunakan nomor layanan '
+                            'spesifik seperti 119 atau 110.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFF6B4F00),
+                              height: 1.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
                 ],
               ),
             ),
@@ -788,6 +922,138 @@ class _ActionButton extends StatelessWidget {
                   isPrimary ? FontWeight.w700 : FontWeight.w600,
               color: isPrimary ? color : AppColors.textDark,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmergencyHotline {
+  const _EmergencyHotline({
+    required this.title,
+    required this.number,
+    required this.description,
+    required this.note,
+    required this.icon,
+    required this.color,
+  });
+
+  final String title;
+  final String number;
+  final String description;
+  final String note;
+  final IconData icon;
+  final Color color;
+}
+
+class _EmergencyHotlineCard extends StatelessWidget {
+  const _EmergencyHotlineCard({
+    required this.hotline,
+    required this.onCall,
+  });
+
+  final _EmergencyHotline hotline;
+  final VoidCallback onCall;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: hotline.color.withValues(alpha: 0.14),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: hotline.color.withValues(alpha: 0.08),
+            blurRadius: 16,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: hotline.color.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(
+                  hotline.icon,
+                  color: hotline.color,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hotline.title,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.navy,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      hotline.number,
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900,
+                        color: hotline.color,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      hotline.description,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textDark,
+                        height: 1.45,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      hotline.note,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textGrey,
+                        height: 1.45,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          FilledButton.tonalIcon(
+            onPressed: onCall,
+            style: FilledButton.styleFrom(
+              backgroundColor: hotline.color.withValues(alpha: 0.12),
+              foregroundColor: hotline.color,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 12,
+              ),
+            ),
+            icon: const Icon(Icons.phone_in_talk_rounded, size: 18),
+            label: const Text('Telepon sekarang'),
           ),
         ],
       ),
