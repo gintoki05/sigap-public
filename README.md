@@ -166,6 +166,14 @@ Expected runtime artifact:
 
 - `.litertlm`
 
+Model hosting note:
+
+- this GitHub repository hosts the application source code
+- the default in-app model download does not come from GitHub Releases
+- the app downloads LiteRT-LM model artifacts from Hugging Face model
+  hosting under the `litert-community` repositories configured in
+  `lib/services/gemma_service.dart`
+
 ## Run The App
 
 Install dependencies:
