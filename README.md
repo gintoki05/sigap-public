@@ -1,11 +1,7 @@
 # SIGAP
 
 <p align="center">
-  <img src="assets/logo/logo-dengan-teks.png" alt="SIGAP logo" width="240">
-</p>
-
-<p align="center">
-  <img src="assets/logo/Gemma-4-logo.jpg" alt="Gemma 4 logo" width="180">
+  <img src="assets/logo/sigap_gemma.png" alt="SIGAP x Gemma 4 banner" width="720">
 </p>
 
 <p align="center">
